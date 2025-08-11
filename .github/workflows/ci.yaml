@@ -20,6 +20,9 @@ jobs:
         with:
           components: clippy, rustfmt
 
+      - name: Install Boost
+        run: sudo apt-get update && sudo apt-get install -y libboost-all-dev
+
       - uses: Swatinem/rust-cache@v2
 
       - name: Clippy (default features)
@@ -37,13 +40,21 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macOS-latest]
+        os: [ubuntu-latest, macOS-latest]
 
     steps:
       - uses: actions/checkout@v4
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Boost (Ubuntu)
+        if: matrix.os == 'ubuntu-latest'
+        run: sudo apt-get update && sudo apt-get install -y libboost-all-dev
+
+      - name: Install Boost (macOS)
+        if: matrix.os == 'macOS-latest'
+        run: brew install boost
 
       - uses: Swatinem/rust-cache@v2
 
