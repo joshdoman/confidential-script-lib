@@ -1,6 +1,6 @@
 # confidential-script-lib
 
-`confidential-script-lib` is a Rust library for emulating Bitcoin script within a Trusted Execution Environment (TEE), such as an AWS Nitro Enclave. It enables the off-chain execution of complex script, by validating unlocking conditions inside a secure environment and then authorizing the transaction using a deterministically derived private key.
+`confidential-script-lib` is a Rust library that **emulates Bitcoin script by converting valid script-path spends to key-path spends**. Intended for use within a Trusted Execution Environment (TEE), the library validates unlocking conditions and then authorizes the transaction using a deterministically derived private key.
 
 This approach allows for confidential execution of complex script, including opcodes not yet supported by the Bitcoin protocol. The actual on-chain footprint is a minimal key-path spend, preserving privacy and efficiency.
 
