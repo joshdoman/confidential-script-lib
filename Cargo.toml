@@ -1,0 +1,30 @@
+[package]
+name = "confidential-script-lib"
+version = "0.1.0"
+description = "Authorize on-chain transactions with off-chain verification of Bitcoin script"
+keywords = [ "bitcoin", "script", "kernel", "emulation", "tee" ]
+authors = ["Joshua Doman <joshsdoman@gmail.com>"]
+license = "CC0-1.0"
+homepage = "https://github.com/joshdoman/confidential-script-lib"
+repository = "https://github.com/joshdoman/confidential-script-lib"
+edition = "2024"
+readme = "README.md"
+rust-version = "1.85.0"
+
+[features]
+default = ["std"]
+std = ["bitcoin/std"]
+bitcoinkernel = ["dep:bitcoinkernel"]
+compiler = []
+trace = []
+
+[dependencies]
+bitcoin = "0.32.5"
+bitcoin-units = "0.1.2"
+bitcoinkernel = { version = "0.0.22", optional = true }
+hmac = "0.12.1"
+num-bigint = "0.4.6"
+sha2 = "0.10.9"
+
+[dev-dependencies]
+bitcoinkernel = "0.0.22"
