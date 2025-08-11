@@ -2,7 +2,7 @@
 
 `confidential-script-lib` is a Rust library that **emulates Bitcoin script by converting valid script-path spends to key-path spends**. Intended for use within a Trusted Execution Environment (TEE), the library validates unlocking conditions and then authorizes the transaction using a deterministically derived private key.
 
-This approach allows for confidential execution of complex script, including opcodes not yet supported by the Bitcoin protocol. The actual on-chain footprint is a minimal key-path spend, preserving privacy and efficiency.
+This approach enables confidential execution of complex script, including opcodes not yet supported by the Bitcoin protocol. The actual on-chain footprint is a minimal key-path spend, preserving privacy and efficiency.
 
 ## Overview
 
@@ -14,7 +14,7 @@ The library operates on a two-step process: emulation and signing.
 
 To facilitate offline generation of the real `script_pubkey`, the child key is derived from the parent key using a non-hardened HMAC-SHA512 derivation scheme. This lets users generate addresses using the parent public key, while keeping the parent private key secure.
 
-This library is intended to be run within a TEE, which is securely provisioned with the parent private key. This decouples script execution from on-chain settlemnt, keeping execution private and enabling new functionality with minimal trust assumptions.
+This library is intended to be run within a TEE, which is securely provisioned with the parent private key. This decouples script execution from on-chain settlement, keeping execution private and enabling new functionality with minimal trust assumptions.
 
 ## Failsafe Mechanism: Backup Script Path
 

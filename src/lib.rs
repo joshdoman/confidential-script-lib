@@ -3,10 +3,10 @@
 
 //! # Confidential Script Library
 //!
-//! Verify Bitcoin script execution and authorize an equivalent on-chain transaction using a deterministically derived private key.
+//! Emulate Bitcoin script by converting valid script-path spends to key-path spends. Intended for use within a Trusted Execution Environment (TEE), the library validates unlocking conditions and then authorizes the transaction using a deterministically derived private key.
 //!
-//! This approach allows for confidential execution of complex script, including opcodes not yet supported by the Bitcoin protocol. The actual on-chain footprint is a minimal key-path spend, preserving privacy and efficiency.
-
+//! This approach enables confidential execution of complex script, including opcodes not yet supported by the Bitcoin protocol. The actual on-chain footprint is a minimal key-path spend, preserving privacy and efficiency.
+//!
 //! ## Overview
 //!
 //! The library operates on a two-step process: emulation and signing.
