@@ -100,7 +100,7 @@ pub trait Verifier {
     /// * `spent_outputs` - The outputs being spent by the transaction.
     ///
     /// # Errors
-    /// Returns `KernelError` if verification fails.
+    /// Returns `Error` if verification fails.
     fn verify(
         &self,
         script_pubkey: &[u8],
