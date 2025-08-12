@@ -11,17 +11,17 @@
 //!
 //! The library operates on a two-step process: emulation and signing.
 //!
-//! 1.  **Emulation**: A transaction is constructed using an input spending a *real* `previous_outpoint` with a witness that is a script-path spend from an *emulated* P2TR `script_pubkey`. This library validates this emulated witness using a `Verifier`, which closely matches the API of `rust-bitcoinkernel`. Using the `bitcoinkernel` feature, users can use this default verifier, or they can provide an alternative verifier that enforces a different set of rules (ex: a fork of `bitcoinkernel` that supports Simplicity).
+//! 1.  **Emulation**: A transaction is constructed using an input spending a *real* `previous_outpoint` with a witness that is a script-path spend from an *emulated* P2TR `script_pubkey`. The library validates this emulated witness using a `Verifier`, which matches the API of `rust-bitcoinkernel`. If compiled with the `bitcoinkernel` feature, users can use the actual kernel as the default verifier, or they can provide an alternative verifier that enforces a different set of rules (ex: a fork of `bitcoinkernel` that supports Simplicity).
 //!
-//! 2.  **Signing**: If verified, the library uses the provided parent private key and the merkle root of the *emulated* script path spend to derive a child private key, which corresponds to the internal public key of the *actual* UTXO being spent. The library then updates the transaction with a key-path spend using this child key.
+//! 2.  **Signing**: If the transaction is valid, the library uses the provided parent private key and the merkle root of the *emulated* script path spend to derive a child private key, which corresponds to the internal public key of the *actual* UTXO being spent. The library then updates the transaction with a key-path spend signed with this child key.
 //!
-//! To facilitate offline generation of the real `script_pubkey`, the child key is derived from the parent key using a non-hardened HMAC-SHA512 derivation scheme. This lets users generate addresses using the parent public key, while keeping the parent private key secure.
+//! To facilitate offline generation of the real `script_pubkey`, the child key is derived from the parent key using a non-hardened HMAC-SHA512 derivation scheme. This lets users generate addresses using the parent _public_ key, while the parent private key is secured elsewhere.
 //!
-//! This library is intended to be run within a TEE, which is securely provisioned with the parent private key. This decouples script execution from on-chain settlemnt, keeping execution private and enabling new functionality with minimal trust assumptions.
+//! This library is intended to be run within a TEE, which is securely provisioned with the parent private key. This decouples script execution from on-chain settlement, keeping execution private and enabling new functionality with minimal trust assumptions.
 //!
 //! ## Failsafe Mechanism: Backup Script Path
 //!
-//! To prevent funds from being irrecoverably locked if the TEE becomes unavailable, the library allows for the inclusion of an optional `backup_merkle_root` when creating the actual on-chain address. This backup root defines alternative spending paths that are independent of the TEE.
+//! To prevent funds from being irrecoverably locked if the TEE becomes unavailable, the library allows for the inclusion of an optional `backup_merkle_root` when creating the actual on-chain address. This backup merkle root defines the alternative spending paths that are available independently of the TEE.
 //!
 //! A common use case for this feature is to include a timelocked recovery script (e.g., using `OP_CHECKSEQUENCEVERIFY`). If the primary TEE-based execution path becomes unavailable for any reason, the owner can wait for the timelock to expire and then recover the funds using a pre-defined backup script. This provides a crucial failsafe, ensuring that users retain ultimate control over their assets.
 //!
