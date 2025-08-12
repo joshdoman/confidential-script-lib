@@ -28,7 +28,7 @@ This library can be used to emulate proposed upgrades, such as new opcodes like 
 
 ## Recommended Setup
 
-This library is intended to be used within a Nitro Enclave, integrated with KMS such that any AWS account can provision an identical enclave with the same master private key. For maximum security, the KMS key should be created with a policy making it non-deletable and only accessible to enclaves running a specific image. The policy should also be irrevocable, ensuring the key cannot be used outside the enclave in the future.
+This library is intended to be used within a Nitro Enclave, integrated with KMS such that any AWS account can provision an identical enclave with the same master private key. For maximum security, **the KMS key should be created with an irrevocable policy that makes it un-deletable and accessible only to enclaves running a specific, verified image**. Crucially, it should allow requests from any AWS account that meets this strict criteria, so that usage is permissionless.
 
 To generate the master secret, an enclave should generate a random secret and use `GenerateDataKey` to encrypt it using KMS. To provision a different enclave with the secret, the user should provide the enclave the encrypted encryption key and the encrypted secret. The enclave can then decrypt the encryption key with KMS using `Decrypt` and subequently decrypt the secret.
 
