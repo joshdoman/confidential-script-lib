@@ -44,8 +44,8 @@
 compile_error!("`std` must be enabled");
 
 use bitcoin::{
-    Address, Network, ScriptBuf, TapNodeHash, TapSighashType, TapTweakHash, Transaction, TxIn,
-    TxOut, Witness, XOnlyPublicKey,
+    Address, Network, TapNodeHash, TapSighashType, TapTweakHash, Transaction, TxOut, Witness,
+    XOnlyPublicKey,
     consensus::deserialize,
     hashes::Hash,
     key::Secp256k1,
@@ -245,14 +245,6 @@ pub fn verify_and_sign<V: Verifier>(
         None,
         actual_spent_outputs,
     )?;
-
-    // Update input at this index
-    tx.input[input_index as usize] = TxIn {
-        previous_output: input.previous_output,
-        script_sig: ScriptBuf::new(),
-        sequence: input.sequence, // Keep the same sequence
-        witness: Witness::new(),
-    };
 
     // Get annex if it is data-carrying (leading byte is 0x00)
     let annex = input
