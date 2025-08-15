@@ -83,6 +83,8 @@ pub enum Error {
     InvalidSighash,
     /// Input index out of bounds
     InputIndexOutOfBounds,
+    /// Unexpected input scriptPubKey
+    UnexpectedInput,
 }
 
 /// Trait to abstract the behavior of the bitcoin script verifier, allowing
@@ -212,22 +214,12 @@ pub fn verify_and_sign<V: Verifier>(
 
     // Create emulated script pubkey
     let secp = Secp256k1::new();
-    let address = Address::p2tr(
+    let emulated_address = Address::p2tr(
         &secp,
         control_block.internal_key,
         Some(merkle_root),
         Network::Bitcoin,
     );
-
-    // Must satisfy verifier
-    verifier.verify(
-        address.script_pubkey().as_bytes(),
-        Some(amount),
-        emulated_tx_to,
-        input_index,
-        None,
-        actual_spent_outputs,
-    )?;
 
     // Get actual internal key and child key to be tweaked for signing
     let child_key = derive_child_secret_key(parent_key, merkle_root.to_byte_array())?;
@@ -237,6 +229,22 @@ pub fn verify_and_sign<V: Verifier>(
     } else {
         child_key
     };
+
+    // Actual input scriptPubKey must match expected actual scriptPubKey
+    let actual_address = Address::p2tr(&secp, internal_key, backup_merkle_root, Network::Bitcoin);
+    if actual_spent_outputs[input_index as usize].script_pubkey != actual_address.script_pubkey() {
+        return Err(Error::UnexpectedInput);
+    }
+
+    // Must satisfy verifier
+    verifier.verify(
+        emulated_address.script_pubkey().as_bytes(),
+        Some(amount),
+        emulated_tx_to,
+        input_index,
+        None,
+        actual_spent_outputs,
+    )?;
 
     // Update input at this index
     tx.input[input_index as usize] = TxIn {
@@ -427,6 +435,9 @@ impl fmt::Display for Error {
             Error::InputIndexOutOfBounds => {
                 write!(f, "Input index out of bounds")
             }
+            Error::UnexpectedInput => {
+                write!(f, "Unexpected input scriptPubKey")
+            }
         }
     }
 }
@@ -543,6 +554,77 @@ mod kernel_tests {
         );
 
         assert!(matches!(result, Err(Error::InputIndexOutOfBounds)));
+    }
+
+    #[test]
+    fn test_not_script_path_spend() {
+        let txout = TxOut {
+            value: Amount::from_sat(100000),
+            script_pubkey: ScriptBuf::new_op_return([]),
+        };
+        let result = verify_and_sign(
+            &DefaultVerifier,
+            0,
+            &serialize(&create_test_transaction_single_input()),
+            std::slice::from_ref(&txout),
+            &[1u8; 32],
+            SecretKey::from_slice(&[1u8; 32]).unwrap(),
+            None,
+        );
+
+        assert!(matches!(result, Err(Error::NotScriptPathSpend)));
+    }
+
+    #[test]
+    fn test_unexpected_input_script_pubkey() {
+        let secp = Secp256k1::new();
+
+        // 1. Create a dummy internal key
+        let internal_secret = SecretKey::from_slice(&[1u8; 32]).unwrap();
+        let internal_key = UntweakedPublicKey::from(internal_secret.public_key(&secp));
+
+        // 2. Create OP_TRUE script leaf
+        let op_true_script = Script::builder()
+            .push_opcode(bitcoin::opcodes::OP_TRUE)
+            .into_script();
+
+        // 3. Build the taproot tree with single OP_TRUE leaf
+        let taproot_builder = TaprootBuilder::new()
+            .add_leaf(0, op_true_script.clone())
+            .unwrap();
+        let taproot_spend_info = taproot_builder.finalize(&secp, internal_key).unwrap();
+
+        // 4. Get the control block for our OP_TRUE leaf
+        let control_block = taproot_spend_info
+            .control_block(&(op_true_script.clone(), LeafVersion::TapScript))
+            .unwrap();
+
+        // 5. Create the witness stack for script path spending
+        let mut witness = Witness::new();
+        witness.push(op_true_script.as_bytes());
+        witness.push(control_block.serialize());
+
+        // 6. Create emulated transaction
+        let mut emulated_tx = create_test_transaction_single_input();
+        emulated_tx.input[0].witness = witness;
+
+        // 7. Create input UTXO with unexpected scriptPubKey
+        let txout = TxOut {
+            value: Amount::from_sat(100000),
+            script_pubkey: ScriptBuf::new_op_return([]),
+        };
+
+        let result = verify_and_sign(
+            &DefaultVerifier,
+            0,
+            &serialize(&emulated_tx),
+            std::slice::from_ref(&txout),
+            &[1u8; 32],
+            SecretKey::from_slice(&[1u8; 32]).unwrap(),
+            None,
+        );
+
+        assert!(matches!(result, Err(Error::UnexpectedInput)));
     }
 
     #[test]
