@@ -82,12 +82,9 @@ pub struct DefaultVerifier;
 ///
 /// # Arguments
 /// * `verifier` - The verifier to use for script validation
-/// * `emulated_script_pubkey` - The P2TR script to verify against
-/// * `amount` - The amount for the input
-/// * `emulated_tx_to` - Serialized transaction to verify and sign
 /// * `input_index` - Index of the input to verify and sign (0-based)
-/// * `emulated_spent_outputs` - Outputs being spent in the emulated transaction
-/// * `actual_spent_outputs` - Actual outputs for signature generation
+/// * `emulated_tx_to` - Serialized transaction to verify and sign
+/// * `actual_spent_outputs` - Actual outputs being spent
 /// * `aux_rand` - Auxiliary random data for signing
 /// * `parent_key` - Parent secret key used to derive child key for signing
 /// * `backup_merkle_root` - Optional merkle root for backup script path spending
@@ -96,11 +93,8 @@ pub struct DefaultVerifier;
 /// Returns error if verification fails, key derivation fails, or signing fails
 pub fn verify_and_sign<V: Verifier>(
     verifier: &V,
-    emulated_script_pubkey: &[u8],
-    amount: i64,
-    emulated_tx_to: &[u8],
     input_index: u32,
-    emulated_spent_outputs: &[TxOut],
+    emulated_tx_to: &[u8],
     actual_spent_outputs: &[TxOut],
     aux_rand: &[u8; 32],
     parent_key: SecretKey,
