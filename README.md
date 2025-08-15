@@ -77,8 +77,12 @@ pub struct DefaultVerifier;
 /// This function performs script verification using bitcoinkernel, verifying an
 /// emulated P2TR input. If successful, it derives an XOnlyPublicKey from the
 /// parent key and the emulated merkle root, which is then tweaked with an optional
-/// backup merkle root to derive the actual spent UTXO, which is then key path signed
+/// backup merkle root to derive the actual spent UTXO, which is then key-path signed
 /// with `SIGHASH_DEFAULT`.
+///
+/// If the emulated script-path spend includes a data-carrying annex (begins with 0x50
+/// followed by 0x00), the annex is included in the key-path spend. Otherwise, the annex
+/// is dropped.
 ///
 /// # Arguments
 /// * `verifier` - The verifier to use for script validation
