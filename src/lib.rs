@@ -44,18 +44,18 @@
 compile_error!("`std` must be enabled");
 
 use bitcoin::{
-    Address, Network, TapNodeHash, TapSighashType, TapTweakHash, Transaction, TxOut, Witness,
-    XOnlyPublicKey,
-    consensus::deserialize,
-    hashes::Hash,
+    Address, Network, Sequence, TapNodeHash, TapSighashType, TapTweakHash, Transaction, TxIn,
+    TxOut, Witness, XOnlyPublicKey,
+    consensus::{Encodable, deserialize},
+    hashes::{Hash, sha256},
     key::Secp256k1,
-    secp256k1,
-    secp256k1::{Keypair, Message, PublicKey, Scalar, SecretKey, constants::CURVE_ORDER},
+    secp256k1::{self, Keypair, Message, PublicKey, Scalar, SecretKey, constants::CURVE_ORDER},
     sighash::{Annex, Prevouts, SighashCache},
     taproot::{ControlBlock, Signature},
 };
-#[cfg(feature = "bitcoinkernel")]
-use bitcoinkernel::{KernelError, verify};
+
+#[cfg(feature = "bitcoinkernel-covenants")]
+use bitcoinkernel_covenants::{KernelError, verify};
 use hmac::{Hmac, Mac};
 use num_bigint::BigUint;
 use sha2::Sha512;
@@ -90,7 +90,7 @@ pub enum Error {
 /// Trait to abstract the behavior of the bitcoin script verifier, allowing
 /// users to provide their own verifier.
 pub trait Verifier {
-    /// Verify a bitcoin script, mirroring the API of `bitcoinkernel::verify`.
+    /// Verify a bitcoin script, mirroring the API of `bitcoinkernel_covenants::verify`.
     ///
     /// # Arguments
     /// * `script_pubkey` - The script public key to verify.
@@ -114,10 +114,10 @@ pub trait Verifier {
 }
 
 /// The default `Verifier` implementation that uses `bitcoinkernel`.
-#[cfg(feature = "bitcoinkernel")]
+#[cfg(feature = "bitcoinkernel-covenants")]
 pub struct DefaultVerifier;
 
-#[cfg(feature = "bitcoinkernel")]
+#[cfg(feature = "bitcoinkernel-covenants")]
 impl Verifier for DefaultVerifier {
     fn verify(
         &self,
@@ -131,14 +131,15 @@ impl Verifier for DefaultVerifier {
         let mut outputs = Vec::new();
         for txout in spent_outputs {
             let amount = txout.value.to_signed()?.to_sat();
-            let script = bitcoinkernel::ScriptPubkey::try_from(txout.script_pubkey.as_bytes())?;
-            outputs.push(bitcoinkernel::TxOut::new(&script, amount));
+            let script =
+                bitcoinkernel_covenants::ScriptPubkey::try_from(txout.script_pubkey.as_bytes())?;
+            outputs.push(bitcoinkernel_covenants::TxOut::new(&script, amount));
         }
 
         verify(
-            &bitcoinkernel::ScriptPubkey::try_from(script_pubkey)?,
+            &bitcoinkernel_covenants::ScriptPubkey::try_from(script_pubkey)?,
             amount,
-            &bitcoinkernel::Transaction::try_from(tx_to)?,
+            &bitcoinkernel_covenants::Transaction::try_from(tx_to)?,
             input_index,
             flags,
             &outputs,
@@ -434,7 +435,7 @@ impl fmt::Display for Error {
     }
 }
 
-#[cfg(feature = "bitcoinkernel")]
+#[cfg(feature = "bitcoinkernel-covenants")]
 impl From<KernelError> for Error {
     fn from(error: KernelError) -> Self {
         Error::VerificationFailed(error.to_string())
@@ -460,15 +461,16 @@ impl From<bitcoin_units::amount::OutOfRangeError> for Error {
 }
 
 #[cfg(test)]
-#[cfg(feature = "bitcoinkernel")]
+#[cfg(feature = "bitcoinkernel-covenants")]
 mod kernel_tests {
     use super::*;
     use bitcoin::{
-        Address, Amount, Network, OutPoint, Script, ScriptBuf, Transaction, TxIn, TxOut, Txid,
-        Witness,
+        Address, Amount, Network, Opcode, OutPoint, Script, ScriptBuf, Transaction, TxIn, TxOut,
+        Txid, Witness,
         consensus::encode::serialize,
         hashes::Hash,
         key::UntweakedPublicKey,
+        opcodes::all::{OP_CAT, OP_EQUAL, OP_NOP4, OP_RETURN_204},
         taproot::{LeafVersion, TaprootBuilder},
     };
 
@@ -685,16 +687,20 @@ mod kernel_tests {
         for txout in actual_spent_outputs {
             let amount = txout.value.to_signed().unwrap().to_sat();
             let script =
-                bitcoinkernel::ScriptPubkey::try_from(txout.script_pubkey.as_bytes()).unwrap();
-            actual_outputs.push(bitcoinkernel::TxOut::new(&script, amount));
+                bitcoinkernel_covenants::ScriptPubkey::try_from(txout.script_pubkey.as_bytes())
+                    .unwrap();
+            actual_outputs.push(bitcoinkernel_covenants::TxOut::new(&script, amount));
         }
 
         // 10. Verify the actual transaction was properly signed
-        let verify_result = bitcoinkernel::verify(
-            &bitcoinkernel::ScriptPubkey::try_from(actual_address.script_pubkey().as_bytes())
-                .unwrap(),
+        let verify_result = bitcoinkernel_covenants::verify(
+            &bitcoinkernel_covenants::ScriptPubkey::try_from(
+                actual_address.script_pubkey().as_bytes(),
+            )
+            .unwrap(),
             Some(100_000),
-            &bitcoinkernel::Transaction::try_from(serialize(&actual_tx).as_slice()).unwrap(),
+            &bitcoinkernel_covenants::Transaction::try_from(serialize(&actual_tx).as_slice())
+                .unwrap(),
             0,
             None,
             &actual_outputs,
@@ -775,16 +781,20 @@ mod kernel_tests {
         for txout in actual_spent_outputs {
             let amount = txout.value.to_signed().unwrap().to_sat();
             let script =
-                bitcoinkernel::ScriptPubkey::try_from(txout.script_pubkey.as_bytes()).unwrap();
-            actual_outputs.push(bitcoinkernel::TxOut::new(&script, amount));
+                bitcoinkernel_covenants::ScriptPubkey::try_from(txout.script_pubkey.as_bytes())
+                    .unwrap();
+            actual_outputs.push(bitcoinkernel_covenants::TxOut::new(&script, amount));
         }
 
         // 10. Verify the actual transaction was properly signed
-        let verify_result = bitcoinkernel::verify(
-            &bitcoinkernel::ScriptPubkey::try_from(actual_address.script_pubkey().as_bytes())
-                .unwrap(),
+        let verify_result = bitcoinkernel_covenants::verify(
+            &bitcoinkernel_covenants::ScriptPubkey::try_from(
+                actual_address.script_pubkey().as_bytes(),
+            )
+            .unwrap(),
             Some(100_000),
-            &bitcoinkernel::Transaction::try_from(serialize(&actual_tx).as_slice()).unwrap(),
+            &bitcoinkernel_covenants::Transaction::try_from(serialize(&actual_tx).as_slice())
+                .unwrap(),
             0,
             None,
             &actual_outputs,
@@ -866,16 +876,20 @@ mod kernel_tests {
         for txout in actual_spent_outputs {
             let amount = txout.value.to_signed().unwrap().to_sat();
             let script =
-                bitcoinkernel::ScriptPubkey::try_from(txout.script_pubkey.as_bytes()).unwrap();
-            actual_outputs.push(bitcoinkernel::TxOut::new(&script, amount));
+                bitcoinkernel_covenants::ScriptPubkey::try_from(txout.script_pubkey.as_bytes())
+                    .unwrap();
+            actual_outputs.push(bitcoinkernel_covenants::TxOut::new(&script, amount));
         }
 
         // 10. Verify the actual transaction was properly signed
-        let verify_result = bitcoinkernel::verify(
-            &bitcoinkernel::ScriptPubkey::try_from(actual_address.script_pubkey().as_bytes())
-                .unwrap(),
+        let verify_result = bitcoinkernel_covenants::verify(
+            &bitcoinkernel_covenants::ScriptPubkey::try_from(
+                actual_address.script_pubkey().as_bytes(),
+            )
+            .unwrap(),
             Some(100_000),
-            &bitcoinkernel::Transaction::try_from(serialize(&actual_tx).as_slice()).unwrap(),
+            &bitcoinkernel_covenants::Transaction::try_from(serialize(&actual_tx).as_slice())
+                .unwrap(),
             0,
             None,
             &actual_outputs,
@@ -955,16 +969,20 @@ mod kernel_tests {
         for txout in actual_spent_outputs {
             let amount = txout.value.to_signed().unwrap().to_sat();
             let script =
-                bitcoinkernel::ScriptPubkey::try_from(txout.script_pubkey.as_bytes()).unwrap();
-            actual_outputs.push(bitcoinkernel::TxOut::new(&script, amount));
+                bitcoinkernel_covenants::ScriptPubkey::try_from(txout.script_pubkey.as_bytes())
+                    .unwrap();
+            actual_outputs.push(bitcoinkernel_covenants::TxOut::new(&script, amount));
         }
 
         // 11. Verify the actual transaction was properly signed
-        let verify_result = bitcoinkernel::verify(
-            &bitcoinkernel::ScriptPubkey::try_from(actual_address.script_pubkey().as_bytes())
-                .unwrap(),
+        let verify_result = bitcoinkernel_covenants::verify(
+            &bitcoinkernel_covenants::ScriptPubkey::try_from(
+                actual_address.script_pubkey().as_bytes(),
+            )
+            .unwrap(),
             Some(100_000),
-            &bitcoinkernel::Transaction::try_from(serialize(&actual_tx).as_slice()).unwrap(),
+            &bitcoinkernel_covenants::Transaction::try_from(serialize(&actual_tx).as_slice())
+                .unwrap(),
             0,
             None,
             &actual_outputs,
@@ -1045,16 +1063,20 @@ mod kernel_tests {
         for txout in actual_spent_outputs {
             let amount = txout.value.to_signed().unwrap().to_sat();
             let script =
-                bitcoinkernel::ScriptPubkey::try_from(txout.script_pubkey.as_bytes()).unwrap();
-            actual_outputs.push(bitcoinkernel::TxOut::new(&script, amount));
+                bitcoinkernel_covenants::ScriptPubkey::try_from(txout.script_pubkey.as_bytes())
+                    .unwrap();
+            actual_outputs.push(bitcoinkernel_covenants::TxOut::new(&script, amount));
         }
 
         // 11. Verify the actual transaction was properly signed
-        let verify_result = bitcoinkernel::verify(
-            &bitcoinkernel::ScriptPubkey::try_from(actual_address.script_pubkey().as_bytes())
-                .unwrap(),
+        let verify_result = bitcoinkernel_covenants::verify(
+            &bitcoinkernel_covenants::ScriptPubkey::try_from(
+                actual_address.script_pubkey().as_bytes(),
+            )
+            .unwrap(),
             Some(100_000),
-            &bitcoinkernel::Transaction::try_from(serialize(&actual_tx).as_slice()).unwrap(),
+            &bitcoinkernel_covenants::Transaction::try_from(serialize(&actual_tx).as_slice())
+                .unwrap(),
             0,
             None,
             &actual_outputs,
@@ -1136,16 +1158,20 @@ mod kernel_tests {
         for txout in actual_spent_outputs {
             let amount = txout.value.to_signed().unwrap().to_sat();
             let script =
-                bitcoinkernel::ScriptPubkey::try_from(txout.script_pubkey.as_bytes()).unwrap();
-            actual_outputs.push(bitcoinkernel::TxOut::new(&script, amount));
+                bitcoinkernel_covenants::ScriptPubkey::try_from(txout.script_pubkey.as_bytes())
+                    .unwrap();
+            actual_outputs.push(bitcoinkernel_covenants::TxOut::new(&script, amount));
         }
 
         // 10. Verify the actual transaction was properly signed
-        let verify_result = bitcoinkernel::verify(
-            &bitcoinkernel::ScriptPubkey::try_from(actual_address.script_pubkey().as_bytes())
-                .unwrap(),
+        let verify_result = bitcoinkernel_covenants::verify(
+            &bitcoinkernel_covenants::ScriptPubkey::try_from(
+                actual_address.script_pubkey().as_bytes(),
+            )
+            .unwrap(),
             Some(100_000),
-            &bitcoinkernel::Transaction::try_from(serialize(&actual_tx).as_slice()).unwrap(),
+            &bitcoinkernel_covenants::Transaction::try_from(serialize(&actual_tx).as_slice())
+                .unwrap(),
             1,
             None,
             &actual_outputs,
@@ -1153,6 +1179,431 @@ mod kernel_tests {
 
         assert!(verify_result.is_ok());
         assert_eq!(actual_tx.input[1].witness.len(), 1);
+    }
+
+    #[test]
+    fn test_verify_and_sign_single_input_single_leaf_op_cat() {
+        let secp = Secp256k1::new();
+
+        // 1. Create a dummy internal key
+        let internal_secret = SecretKey::from_slice(&[1u8; 32]).unwrap();
+        let internal_key = UntweakedPublicKey::from(internal_secret.public_key(&secp));
+
+        // 2. Create OP_CAT script leaf
+        let op_cat_script = Script::builder()
+            .push_opcode(OP_CAT)
+            .push_slice(b"op_cat")
+            .push_opcode(OP_EQUAL)
+            .into_script();
+
+        // 3. Build the taproot tree with single OP_CAT leaf
+        let taproot_builder = TaprootBuilder::new()
+            .add_leaf(0, op_cat_script.clone())
+            .unwrap();
+        let taproot_spend_info = taproot_builder.finalize(&secp, internal_key).unwrap();
+
+        // 4. Get the control block for our OP_CAT leaf
+        let control_block = taproot_spend_info
+            .control_block(&(op_cat_script.clone(), LeafVersion::TapScript))
+            .unwrap();
+
+        // 5. Create the witness stack for script path spending
+        let mut witness = Witness::new();
+        witness.push(b"op_");
+        witness.push(b"cat");
+        witness.push(op_cat_script.as_bytes());
+        witness.push(control_block.serialize());
+
+        // 6. Create emulated transaction
+        let mut emulated_tx = create_test_transaction_single_input();
+        emulated_tx.input[0].witness = witness;
+
+        // 7. Create actual child secret
+        let aux_rand = [1u8; 32];
+        let parent_secret = SecretKey::from_slice(&[1u8; 32]).unwrap();
+        let child_secret = derive_child_secret_key(
+            parent_secret,
+            taproot_spend_info.merkle_root().unwrap().to_byte_array(),
+        )
+        .unwrap();
+
+        // 8. Create actual P2TR outputs
+        let actual_internal_key = XOnlyPublicKey::from(child_secret.public_key(&secp));
+        let actual_address = Address::p2tr(&secp, actual_internal_key, None, Network::Bitcoin);
+        let actual_spent_outputs = [TxOut {
+            value: Amount::from_sat(100_000),
+            script_pubkey: actual_address.script_pubkey(),
+        }];
+
+        // 9. Verify and sign actual transaction
+        let actual_tx = verify_and_sign(
+            &DefaultVerifier,
+            0,
+            &serialize(&emulated_tx),
+            &actual_spent_outputs,
+            &aux_rand,
+            parent_secret,
+            None,
+        )
+        .unwrap();
+
+        let mut actual_outputs = Vec::new();
+        for txout in actual_spent_outputs {
+            let amount = txout.value.to_signed().unwrap().to_sat();
+            let script =
+                bitcoinkernel_covenants::ScriptPubkey::try_from(txout.script_pubkey.as_bytes())
+                    .unwrap();
+            actual_outputs.push(bitcoinkernel_covenants::TxOut::new(&script, amount));
+        }
+
+        // 10. Verify the actual transaction was properly signed
+        let verify_result = bitcoinkernel_covenants::verify(
+            &bitcoinkernel_covenants::ScriptPubkey::try_from(
+                actual_address.script_pubkey().as_bytes(),
+            )
+            .unwrap(),
+            Some(100_000),
+            &bitcoinkernel_covenants::Transaction::try_from(serialize(&actual_tx).as_slice())
+                .unwrap(),
+            0,
+            None,
+            &actual_outputs,
+        );
+
+        assert!(verify_result.is_ok());
+        assert_eq!(actual_tx.input[0].witness.len(), 1);
+    }
+
+    #[test]
+    fn test_verify_and_sign_single_input_single_leaf_op_cat_fail() {
+        let secp = Secp256k1::new();
+
+        // 1. Create a dummy internal key
+        let internal_secret = SecretKey::from_slice(&[1u8; 32]).unwrap();
+        let internal_key = UntweakedPublicKey::from(internal_secret.public_key(&secp));
+
+        // 2. Create OP_CAT script leaf with wrong slice
+        let op_cat_script = Script::builder()
+            .push_opcode(OP_CAT)
+            .push_slice(b"op_dog")
+            .push_opcode(OP_EQUAL)
+            .into_script();
+
+        // 3. Build the taproot tree with single OP_TRUE leaf
+        let taproot_builder = TaprootBuilder::new()
+            .add_leaf(0, op_cat_script.clone())
+            .unwrap();
+        let taproot_spend_info = taproot_builder.finalize(&secp, internal_key).unwrap();
+
+        // 4. Get the control block for our OP_TRUE leaf
+        let control_block = taproot_spend_info
+            .control_block(&(op_cat_script.clone(), LeafVersion::TapScript))
+            .unwrap();
+
+        // 5. Create the witness stack for script path spending
+        let mut witness = Witness::new();
+        witness.push(b"op_");
+        witness.push(b"cat");
+        witness.push(op_cat_script.as_bytes());
+        witness.push(control_block.serialize());
+
+        // 6. Create emulated transaction
+        let mut emulated_tx = create_test_transaction_single_input();
+        emulated_tx.input[0].witness = witness;
+
+        // 7. Create actual child secret
+        let aux_rand = [1u8; 32];
+        let parent_secret = SecretKey::from_slice(&[1u8; 32]).unwrap();
+        let child_secret = derive_child_secret_key(
+            parent_secret,
+            taproot_spend_info.merkle_root().unwrap().to_byte_array(),
+        )
+        .unwrap();
+
+        // 8. Create actual P2TR outputs
+        let actual_internal_key = XOnlyPublicKey::from(child_secret.public_key(&secp));
+        let actual_address = Address::p2tr(&secp, actual_internal_key, None, Network::Bitcoin);
+        let actual_spent_outputs = [TxOut {
+            value: Amount::from_sat(100_000),
+            script_pubkey: actual_address.script_pubkey(),
+        }];
+
+        // 9. Verify and sign actual transaction
+        let actual_tx = verify_and_sign(
+            &DefaultVerifier,
+            0,
+            &serialize(&emulated_tx),
+            &actual_spent_outputs,
+            &aux_rand,
+            parent_secret,
+            None,
+        );
+
+        assert!(actual_tx.is_err());
+    }
+
+    const OP_CHECKTEMPLATEVERIFY: Opcode = OP_NOP4;
+    const OP_CHECKSIGFROMSTACK: Opcode = OP_RETURN_204;
+
+    #[test]
+    fn test_verify_and_sign_single_input_single_leaf_op_ctv_op_csfs() {
+        let secp = Secp256k1::new();
+
+        // 1. Create a dummy internal key
+        let internal_secret = SecretKey::from_slice(&[1u8; 32]).unwrap();
+        let internal_key = UntweakedPublicKey::from(internal_secret.public_key(&secp));
+
+        //calculate ctv hash
+        let ctv_hash = ctv_hash(&create_test_transaction_single_input().output, None, None);
+
+        // 2. Create OP_CTV+CSFS script leaf
+        let op_ctv_script = Script::builder()
+            .push_slice(ctv_hash)
+            .push_opcode(OP_CHECKTEMPLATEVERIFY)
+            .push_x_only_key(&internal_key)
+            .push_opcode(OP_CHECKSIGFROMSTACK)
+            .into_script();
+
+        // 3. Build the taproot tree with single OP_CTV+OP_CSFS leaf
+        let taproot_builder = TaprootBuilder::new()
+            .add_leaf(0, op_ctv_script.clone())
+            .unwrap();
+        let taproot_spend_info = taproot_builder.finalize(&secp, internal_key).unwrap();
+
+        // 4. Get the control block for our OP_CTV+OP_CSFS  leaf
+        let control_block = taproot_spend_info
+            .control_block(&(op_ctv_script.clone(), LeafVersion::TapScript))
+            .unwrap();
+
+        let msg = Message::from_digest_slice(&ctv_hash).unwrap();
+        let keypair = secp256k1::Keypair::from_secret_key(&secp, &internal_secret);
+        let signature: Vec<u8> = secp
+            .sign_schnorr_no_aux_rand(&msg, &keypair)
+            .as_ref()
+            .to_vec();
+
+        // 5. Create the witness stack for script path spending
+        let mut witness = Witness::new();
+        witness.push(signature);
+        witness.push(op_ctv_script.as_bytes());
+        witness.push(control_block.serialize());
+
+        // 6. Create emulated transaction
+        let mut emulated_tx = create_test_transaction_single_input();
+        emulated_tx.input[0].witness = witness;
+
+        // 7. Create actual child secret
+        let aux_rand = [1u8; 32];
+        let parent_secret = SecretKey::from_slice(&[1u8; 32]).unwrap();
+        let child_secret = derive_child_secret_key(
+            parent_secret,
+            taproot_spend_info.merkle_root().unwrap().to_byte_array(),
+        )
+        .unwrap();
+
+        // 8. Create actual P2TR outputs
+        let actual_internal_key = XOnlyPublicKey::from(child_secret.public_key(&secp));
+        let actual_address = Address::p2tr(&secp, actual_internal_key, None, Network::Bitcoin);
+        let actual_spent_outputs = [TxOut {
+            value: Amount::from_sat(100_000),
+            script_pubkey: actual_address.script_pubkey(),
+        }];
+
+        // 9. Verify and sign actual transaction
+        let actual_tx = verify_and_sign(
+            &DefaultVerifier,
+            0,
+            &serialize(&emulated_tx),
+            &actual_spent_outputs,
+            &aux_rand,
+            parent_secret,
+            None,
+        )
+        .unwrap();
+
+        let mut actual_outputs = Vec::new();
+        for txout in actual_spent_outputs {
+            let amount = txout.value.to_signed().unwrap().to_sat();
+            let script =
+                bitcoinkernel_covenants::ScriptPubkey::try_from(txout.script_pubkey.as_bytes())
+                    .unwrap();
+            actual_outputs.push(bitcoinkernel_covenants::TxOut::new(&script, amount));
+        }
+
+        // 10. Verify the actual transaction was properly signed
+        let verify_result = bitcoinkernel_covenants::verify(
+            &bitcoinkernel_covenants::ScriptPubkey::try_from(
+                actual_address.script_pubkey().as_bytes(),
+            )
+            .unwrap(),
+            Some(100_000),
+            &bitcoinkernel_covenants::Transaction::try_from(serialize(&actual_tx).as_slice())
+                .unwrap(),
+            0,
+            None,
+            &actual_outputs,
+        );
+
+        assert!(verify_result.is_ok());
+        assert_eq!(actual_tx.input[0].witness.len(), 1);
+    }
+
+    #[test]
+    fn test_verify_and_sign_single_input_single_leaf_op_ctv_fail() {
+        let secp = Secp256k1::new();
+
+        // 1. Create a dummy internal key
+        let internal_secret = SecretKey::from_slice(&[1u8; 32]).unwrap();
+        let internal_key = UntweakedPublicKey::from(internal_secret.public_key(&secp));
+
+        //create wrong ctv hash
+        let ctv_hash = [0u8; 32];
+
+        // 2. Create OP_CTV+CSFS script leaf
+        let op_ctv_script = Script::builder()
+            .push_slice(ctv_hash)
+            .push_opcode(OP_CHECKTEMPLATEVERIFY)
+            .push_x_only_key(&internal_key)
+            .push_opcode(OP_CHECKSIGFROMSTACK)
+            .into_script();
+
+        // 3. Build the taproot tree with single OP_CTV+OP_CSFS leaf
+        let taproot_builder = TaprootBuilder::new()
+            .add_leaf(0, op_ctv_script.clone())
+            .unwrap();
+        let taproot_spend_info = taproot_builder.finalize(&secp, internal_key).unwrap();
+
+        // 4. Get the control block for our OP_CTV+OP_CSFS leaf
+        let control_block = taproot_spend_info
+            .control_block(&(op_ctv_script.clone(), LeafVersion::TapScript))
+            .unwrap();
+
+        let msg = Message::from_digest_slice(&ctv_hash).unwrap();
+        let keypair = secp256k1::Keypair::from_secret_key(&secp, &internal_secret);
+        let signature: Vec<u8> = secp
+            .sign_schnorr_no_aux_rand(&msg, &keypair)
+            .as_ref()
+            .to_vec();
+
+        // 5. Create the witness stack for script path spending
+        let mut witness = Witness::new();
+        witness.push(signature);
+        witness.push(op_ctv_script.as_bytes());
+        witness.push(control_block.serialize());
+
+        // 6. Create emulated transaction
+        let mut emulated_tx = create_test_transaction_single_input();
+        emulated_tx.input[0].witness = witness;
+
+        // 7. Create actual child secret
+        let aux_rand = [1u8; 32];
+        let parent_secret = SecretKey::from_slice(&[1u8; 32]).unwrap();
+        let child_secret = derive_child_secret_key(
+            parent_secret,
+            taproot_spend_info.merkle_root().unwrap().to_byte_array(),
+        )
+        .unwrap();
+
+        // 8. Create actual P2TR outputs
+        let actual_internal_key = XOnlyPublicKey::from(child_secret.public_key(&secp));
+        let actual_address = Address::p2tr(&secp, actual_internal_key, None, Network::Bitcoin);
+        let actual_spent_outputs = [TxOut {
+            value: Amount::from_sat(100_000),
+            script_pubkey: actual_address.script_pubkey(),
+        }];
+
+        // 9. Verify and sign actual transaction (should fail)
+        let actual_tx = verify_and_sign(
+            &DefaultVerifier,
+            0,
+            &serialize(&emulated_tx),
+            &actual_spent_outputs,
+            &aux_rand,
+            parent_secret,
+            None,
+        );
+
+        assert!(actual_tx.is_err());
+    }
+
+    #[test]
+    fn test_verify_and_sign_single_input_single_leaf_op_csfs_fail() {
+        let secp = Secp256k1::new();
+
+        // 1. Create a dummy internal key
+        let internal_secret = SecretKey::from_slice(&[1u8; 32]).unwrap();
+        let internal_key = UntweakedPublicKey::from(internal_secret.public_key(&secp));
+
+        //calculate ctv hash
+        let ctv_hash = ctv_hash(&create_test_transaction_single_input().output, None, None);
+
+        // 2. Create OP_CTV+CSFS script leaf
+        let op_ctv_script = Script::builder()
+            .push_slice(ctv_hash)
+            .push_opcode(OP_CHECKTEMPLATEVERIFY)
+            .push_x_only_key(&internal_key)
+            .push_opcode(OP_CHECKSIGFROMSTACK)
+            .into_script();
+
+        // 3. Build the taproot tree with single OP_CTV+OP_CSFS leaf
+        let taproot_builder = TaprootBuilder::new()
+            .add_leaf(0, op_ctv_script.clone())
+            .unwrap();
+        let taproot_spend_info = taproot_builder.finalize(&secp, internal_key).unwrap();
+
+        // 4. Get the control block for our OP_CTV+OP_CSFS leaf
+        let control_block = taproot_spend_info
+            .control_block(&(op_ctv_script.clone(), LeafVersion::TapScript))
+            .unwrap();
+
+        let wrong_data = [0u8; 32]; // wrong data for CSFS to sign
+
+        let msg = Message::from_digest_slice(&wrong_data).unwrap();
+        let keypair = secp256k1::Keypair::from_secret_key(&secp, &internal_secret);
+        let signature: Vec<u8> = secp
+            .sign_schnorr_no_aux_rand(&msg, &keypair)
+            .as_ref()
+            .to_vec();
+
+        // 5. Create the witness stack for script path spending
+        let mut witness = Witness::new();
+        witness.push(signature);
+        witness.push(op_ctv_script.as_bytes());
+        witness.push(control_block.serialize());
+
+        // 6. Create emulated transaction
+        let mut emulated_tx = create_test_transaction_single_input();
+        emulated_tx.input[0].witness = witness;
+
+        // 7. Create actual child secret
+        let aux_rand = [1u8; 32];
+        let parent_secret = SecretKey::from_slice(&[1u8; 32]).unwrap();
+        let child_secret = derive_child_secret_key(
+            parent_secret,
+            taproot_spend_info.merkle_root().unwrap().to_byte_array(),
+        )
+        .unwrap();
+
+        // 8. Create actual P2TR outputs
+        let actual_internal_key = XOnlyPublicKey::from(child_secret.public_key(&secp));
+        let actual_address = Address::p2tr(&secp, actual_internal_key, None, Network::Bitcoin);
+        let actual_spent_outputs = [TxOut {
+            value: Amount::from_sat(100_000),
+            script_pubkey: actual_address.script_pubkey(),
+        }];
+
+        // 9. Verify and sign actual transaction (should fail)
+        let actual_tx = verify_and_sign(
+            &DefaultVerifier,
+            0,
+            &serialize(&emulated_tx),
+            &actual_spent_outputs,
+            &aux_rand,
+            parent_secret,
+            None,
+        );
+
+        assert!(actual_tx.is_err());
     }
 }
 
@@ -1220,4 +1671,40 @@ mod non_kernel_tests {
         #[allow(clippy::useless_conversion)]
         let _ = Scalar::from(reduced);
     }
+}
+
+/// Computes the CTV (CheckTemplateVerify) hash for a transaction, used to ensure that the outputs of a transaction match a specific template.
+pub fn ctv_hash(outputs: &[TxOut], timeout: Option<u32>, maybe_txin: Option<&TxIn>) -> [u8; 32] {
+    let mut buffer = Vec::new();
+    buffer.extend(2_i32.to_le_bytes()); // version
+    buffer.extend(0_i32.to_le_bytes()); // locktime
+
+    if let Some(txin) = maybe_txin {
+        let script_sigs_hash = sha256::Hash::hash(&txin.script_sig.to_bytes());
+        buffer.extend(script_sigs_hash.to_byte_array()); //scriptSigs hash (if any non-null scriptSigs)
+    }
+
+    buffer.extend(1_u32.to_le_bytes()); // number of inputs
+
+    let seq = if let Some(timeout_value) = timeout {
+        sha256::Hash::hash(&Sequence(timeout_value).0.to_le_bytes())
+    } else {
+        sha256::Hash::hash(&Sequence::ENABLE_RBF_NO_LOCKTIME.0.to_le_bytes())
+    };
+
+    buffer.extend(seq.to_byte_array()); // sequences hash
+
+    let outputs_len = outputs.len() as u32;
+    buffer.extend(outputs_len.to_le_bytes()); // number of outputs
+
+    let mut output_bytes: Vec<u8> = Vec::new();
+    for o in outputs {
+        o.consensus_encode(&mut output_bytes).unwrap();
+    }
+    buffer.extend(sha256::Hash::hash(&output_bytes).to_byte_array()); // outputs hash
+
+    buffer.extend(0_u32.to_le_bytes()); // inputs index
+
+    let hash = sha256::Hash::hash(&buffer);
+    hash.to_byte_array()
 }

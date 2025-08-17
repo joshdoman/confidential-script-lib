@@ -129,12 +129,12 @@ fn generate_address(
 ```
 
 ## Testing
-The default `Verifier` implementation is based on `bitcoinkernel`, which is an optional feature but required to run the included tests.
+The default `Verifier` implementation is based on `bitcoinkernel-covenants`, which is an optional feature but required to run the included tests.
 
 Use the following command to run the test suite:
 
 ```bash
-cargo test --features bitcoinkernel
+cargo test --features bitcoinkernel-covenants
 ```
 
 Or run:
