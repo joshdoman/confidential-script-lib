@@ -137,7 +137,7 @@ impl Verifier for DefaultVerifier {
             let amount = txout
                 .value
                 .to_signed()
-                .map_err(|e| Error::InvalidAmount(e))?
+                .map_err(Error::InvalidAmount)?
                 .to_sat();
             let script = bitcoinkernel::ScriptPubkey::try_from(txout.script_pubkey.as_bytes())
                 .map_err(|e| Error::VerificationFailed(e.to_string()))?;
