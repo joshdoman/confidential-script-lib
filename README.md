@@ -49,8 +49,8 @@ pub trait Verifier {
     /// * `amount` - The amount of the input being spent.
     /// * `tx_to` - The transaction containing the script.
     /// * `input_index` - The index of the input to verify.
-    /// * `flags` - Script verification flags.
     /// * `spent_outputs` - The outputs being spent by the transaction.
+    /// * `tx_weight` - The weight of the transaction.
     ///
     /// # Errors
     /// Returns `Error` if verification fails.
@@ -60,8 +60,8 @@ pub trait Verifier {
         amount: Option<i64>,
         tx_to: &[u8],
         input_index: u32,
-        flags: Option<u32>,
         spent_outputs: &[TxOut],
+        tx_weight: Weight,
     ) -> Result<(), Error>;
 }
 

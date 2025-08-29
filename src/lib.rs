@@ -44,8 +44,8 @@
 compile_error!("`std` must be enabled");
 
 use bitcoin::{
-    Address, Network, TapNodeHash, TapSighashType, TapTweakHash, Transaction, TxOut, Witness,
-    XOnlyPublicKey,
+    Address, Network, TapNodeHash, TapSighashType, TapTweakHash, Transaction, TxOut, Weight,
+    Witness, XOnlyPublicKey,
     consensus::deserialize,
     hashes::Hash,
     key::Secp256k1,
@@ -85,6 +85,8 @@ pub enum Error {
     InputIndexOutOfBounds,
     /// Unexpected input scriptPubKey
     UnexpectedInput,
+    /// Exceeds maximum allowed weight
+    ExceedsMaxWeight,
 }
 
 /// Trait to abstract the behavior of the bitcoin script verifier, allowing
@@ -97,8 +99,8 @@ pub trait Verifier {
     /// * `amount` - The amount of the input being spent.
     /// * `tx_to` - The transaction containing the script.
     /// * `input_index` - The index of the input to verify.
-    /// * `flags` - Script verification flags.
     /// * `spent_outputs` - The outputs being spent by the transaction.
+    /// * `tx_weight` - The weight of the transaction.
     ///
     /// # Errors
     /// Returns `Error` if verification fails.
@@ -108,8 +110,8 @@ pub trait Verifier {
         amount: Option<i64>,
         tx_to: &[u8],
         input_index: u32,
-        flags: Option<u32>,
         spent_outputs: &[TxOut],
+        tx_weight: Weight,
     ) -> Result<(), Error>;
 }
 
@@ -125,9 +127,13 @@ impl Verifier for DefaultVerifier {
         amount: Option<i64>,
         tx_to: &[u8],
         input_index: u32,
-        flags: Option<u32>,
         spent_outputs: &[TxOut],
+        tx_weight: Weight,
     ) -> Result<(), Error> {
+        if tx_weight > Weight::MAX_BLOCK {
+            return Err(Error::ExceedsMaxWeight);
+        }
+
         let mut outputs = Vec::new();
         for txout in spent_outputs {
             let amount = txout.value.to_signed()?.to_sat();
@@ -140,7 +146,7 @@ impl Verifier for DefaultVerifier {
             amount,
             &bitcoinkernel::Transaction::try_from(tx_to)?,
             input_index,
-            flags,
+            None,
             &outputs,
         )?;
 
@@ -242,8 +248,8 @@ pub fn verify_and_sign<V: Verifier>(
         Some(amount),
         emulated_tx_to,
         input_index,
-        None,
         actual_spent_outputs,
+        tx.weight(),
     )?;
 
     // Get annex if it is data-carrying (leading byte is 0x00)
@@ -429,6 +435,9 @@ impl fmt::Display for Error {
             }
             Error::UnexpectedInput => {
                 write!(f, "Unexpected input scriptPubKey")
+            }
+            Error::ExceedsMaxWeight => {
+                write!(f, "Exceeds maximum allowed transaction weight")
             }
         }
     }
@@ -1153,6 +1162,76 @@ mod kernel_tests {
 
         assert!(verify_result.is_ok());
         assert_eq!(actual_tx.input[1].witness.len(), 1);
+    }
+
+    #[test]
+    fn test_exceeds_max_weight() {
+        let secp = Secp256k1::new();
+
+        // 1. Create a dummy internal key
+        let internal_secret = SecretKey::from_slice(&[1u8; 32]).unwrap();
+        let internal_key = UntweakedPublicKey::from(internal_secret.public_key(&secp));
+
+        // 2. Create OP_TRUE script leaf
+        let op_true_script = Script::builder()
+            .push_opcode(bitcoin::opcodes::OP_TRUE)
+            .into_script();
+
+        // 3. Build the taproot tree with single OP_TRUE leaf
+        let taproot_builder = TaprootBuilder::new()
+            .add_leaf(0, op_true_script.clone())
+            .unwrap();
+        let taproot_spend_info = taproot_builder.finalize(&secp, internal_key).unwrap();
+
+        // 4. Get the control block for our OP_TRUE leaf
+        let control_block = taproot_spend_info
+            .control_block(&(op_true_script.clone(), LeafVersion::TapScript))
+            .unwrap();
+
+        // 5. Create the witness stack for script path spending
+        let mut witness = Witness::new();
+        witness.push(op_true_script.as_bytes());
+        witness.push(control_block.serialize());
+
+        // 6. Create an excessively large emulated transaction
+        let mut emulated_tx = create_test_transaction_single_input();
+        emulated_tx.output = vec![
+            TxOut {
+                value: Amount::from_sat(1),
+                script_pubkey: ScriptBuf::new(),
+            };
+            120_000
+        ];
+        emulated_tx.input[0].witness = witness;
+
+        // 7. Create actual child secret
+        let parent_secret = SecretKey::from_slice(&[1u8; 32]).unwrap();
+        let child_secret = derive_child_secret_key(
+            parent_secret,
+            taproot_spend_info.merkle_root().unwrap().to_byte_array(),
+        )
+        .unwrap();
+
+        // 8. Create actual P2TR output
+        let actual_internal_key = XOnlyPublicKey::from(child_secret.public_key(&secp));
+        let actual_address = Address::p2tr(&secp, actual_internal_key, None, Network::Bitcoin);
+        let actual_spent_outputs = [TxOut {
+            value: Amount::from_sat(100_000),
+            script_pubkey: actual_address.script_pubkey(),
+        }];
+
+        // 9. Verify and sign, expecting an error
+        let result = verify_and_sign(
+            &DefaultVerifier,
+            0,
+            &serialize(&emulated_tx),
+            &actual_spent_outputs,
+            &[1u8; 32],
+            parent_secret,
+            None,
+        );
+
+        assert!(matches!(result, Err(Error::ExceedsMaxWeight)));
     }
 }
 
