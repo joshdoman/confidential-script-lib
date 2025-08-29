@@ -99,7 +99,6 @@ pub trait Verifier {
     /// * `amount` - The amount of the input being spent.
     /// * `tx_to` - The transaction containing the script.
     /// * `input_index` - The index of the input to verify.
-    /// * `flags` - Script verification flags.
     /// * `spent_outputs` - The outputs being spent by the transaction.
     /// * `tx_weight` - The weight of the transaction.
     ///
@@ -111,7 +110,6 @@ pub trait Verifier {
         amount: Option<i64>,
         tx_to: &[u8],
         input_index: u32,
-        flags: Option<u32>,
         spent_outputs: &[TxOut],
         tx_weight: Weight,
     ) -> Result<(), Error>;
@@ -129,7 +127,6 @@ impl Verifier for DefaultVerifier {
         amount: Option<i64>,
         tx_to: &[u8],
         input_index: u32,
-        flags: Option<u32>,
         spent_outputs: &[TxOut],
         tx_weight: Weight,
     ) -> Result<(), Error> {
@@ -149,7 +146,7 @@ impl Verifier for DefaultVerifier {
             amount,
             &bitcoinkernel::Transaction::try_from(tx_to)?,
             input_index,
-            flags,
+            None,
             &outputs,
         )?;
 
@@ -251,7 +248,6 @@ pub fn verify_and_sign<V: Verifier>(
         Some(amount),
         emulated_tx_to,
         input_index,
-        None,
         actual_spent_outputs,
         tx.weight(),
     )?;
