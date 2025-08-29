@@ -54,8 +54,6 @@ use bitcoin::{
     sighash::{Annex, Prevouts, SighashCache},
     taproot::{ControlBlock, Signature},
 };
-#[cfg(feature = "bitcoinkernel")]
-use bitcoinkernel::{KernelError, verify};
 use hmac::{Hmac, Mac};
 use num_bigint::BigUint;
 use sha2::Sha512;
@@ -136,19 +134,24 @@ impl Verifier for DefaultVerifier {
 
         let mut outputs = Vec::new();
         for txout in spent_outputs {
-            let amount = txout.value.to_signed()?.to_sat();
-            let script = bitcoinkernel::ScriptPubkey::try_from(txout.script_pubkey.as_bytes())?;
+            let amount = txout
+                .value
+                .to_signed()
+                .map_err(|e| Error::InvalidAmount(e))?
+                .to_sat();
+            let script = bitcoinkernel::ScriptPubkey::try_from(txout.script_pubkey.as_bytes())
+                .map_err(|e| Error::VerificationFailed(e.to_string()))?;
             outputs.push(bitcoinkernel::TxOut::new(&script, amount));
         }
 
-        verify(
-            &bitcoinkernel::ScriptPubkey::try_from(script_pubkey)?,
-            amount,
-            &bitcoinkernel::Transaction::try_from(tx_to)?,
-            input_index,
-            None,
-            &outputs,
-        )?;
+        let script_pubkey = &bitcoinkernel::ScriptPubkey::try_from(script_pubkey)
+            .map_err(|e| Error::VerificationFailed(e.to_string()))?;
+
+        let tx_to = &bitcoinkernel::Transaction::try_from(tx_to)
+            .map_err(|e| Error::VerificationFailed(e.to_string()))?;
+
+        bitcoinkernel::verify(script_pubkey, amount, tx_to, input_index, None, &outputs)
+            .map_err(|e| Error::VerificationFailed(e.to_string()))?;
 
         Ok(())
     }
@@ -440,13 +443,6 @@ impl fmt::Display for Error {
                 write!(f, "Exceeds maximum allowed transaction weight")
             }
         }
-    }
-}
-
-#[cfg(feature = "bitcoinkernel")]
-impl From<KernelError> for Error {
-    fn from(error: KernelError) -> Self {
-        Error::VerificationFailed(error.to_string())
     }
 }
 
