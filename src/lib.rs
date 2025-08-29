@@ -101,7 +101,7 @@ pub trait Verifier {
     /// * `input_index` - The index of the input to verify.
     /// * `flags` - Script verification flags.
     /// * `spent_outputs` - The outputs being spent by the transaction.
-    /// * `tx_weight` - The outputs being spent by the transaction.
+    /// * `tx_weight` - The weight of the transaction.
     ///
     /// # Errors
     /// Returns `Error` if verification fails.
