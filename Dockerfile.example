@@ -1,0 +1,36 @@
+FROM ubuntu:24.04 AS builder
+
+ARG RUST=1.89.0
+ARG ZIG_VER=0.14.1
+ARG TARGET=aarch64-unknown-linux-musl
+
+RUN apt-get update && apt-get install -y \
+    curl xz-utils cmake libboost1.83-dev libclang-17-dev \
+ && rm -rf /var/lib/apt/lists/*
+
+RUN curl -fSL "https://ziglang.org/download/${ZIG_VER}/zig-aarch64-linux-${ZIG_VER}.tar.xz" -o /tmp/zig.tar.xz \
+ && tar -C /opt -xJf /tmp/zig.tar.xz \
+ && mv /opt/zig-aarch64-linux-* /opt/zig \
+ && ln -sf /opt/zig/zig /usr/local/bin/zig \
+ && rm /tmp/zig.tar.xz
+
+RUN curl -sSf https://sh.rustup.rs | RUSTUP_INIT_SKIP_PATH_CHECK=yes sh -s -- -y --profile minimal --default-toolchain "${RUST}" \
+ && /root/.cargo/bin/rustup target add "${TARGET}" \
+ && /root/.cargo/bin/cargo install --locked cargo-zigbuild
+ENV PATH="/root/.cargo/bin:${PATH}"
+
+ENV ZIG_TARGET=aarch64-linux-musl
+ENV CC="zig cc -target ${ZIG_TARGET}"
+ENV CXX="zig c++ -target ${ZIG_TARGET}"
+ENV CXXFLAGS="-UNDEBUG"
+
+WORKDIR /app
+COPY . ./
+
+ENV Boost_DIR=/usr/lib/aarch64-linux-gnu/cmake/Boost-1.83.0
+
+RUN cargo zigbuild --release --target aarch64-unknown-linux-musl -p examples --bin covenants_example
+
+FROM alpine:3.22.1
+COPY --from=builder /app/target/*/release/covenants_example /covenants_example
+CMD ["/covenants_example","--port","5005"]

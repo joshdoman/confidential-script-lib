@@ -1,0 +1,18 @@
+[package]
+name = "examples"
+version = "0.0.1"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "covenants_example"
+path = "src/covenants_example.rs"
+
+[dependencies]
+bitcoin = { version = "0.32.7", features = ["serde"] }
+serde = { version = "1.0", features = ["derive"] }
+vsock = "0.5.1"
+serde_json = "1.0"
+bitcoinkernel-covenants = "0.0.23"
+confidential-script-lib = { path = "../" }
+hex = "0.4.3"
