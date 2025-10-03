@@ -58,6 +58,8 @@ use hmac::{Hmac, Mac};
 use num_bigint::BigUint;
 use sha2::Sha512;
 use std::fmt;
+#[cfg(feature = "bitcoinkernel")]
+use std::num::TryFromIntError;
 
 /// The initial byte in a data-carrying taproot annex
 pub const TAPROOT_ANNEX_DATA_CARRYING_TAG: u8 = 0;
@@ -104,7 +106,7 @@ pub trait Verifier {
         script_pubkey: &[u8],
         amount: Option<i64>,
         tx_to: &[u8],
-        input_index: u32,
+        input_index: usize,
         spent_outputs: &[TxOut],
     ) -> Result<(), Error>;
 }
@@ -120,7 +122,7 @@ impl Verifier for DefaultVerifier {
         script_pubkey: &[u8],
         amount: Option<i64>,
         tx_to: &[u8],
-        input_index: u32,
+        input_index: usize,
         spent_outputs: &[TxOut],
     ) -> Result<(), Error> {
         let mut outputs = Vec::new();
@@ -140,6 +142,10 @@ impl Verifier for DefaultVerifier {
 
         let tx_to = &bitcoinkernel::Transaction::try_from(tx_to)
             .map_err(|e| Error::VerificationFailed(e.to_string()))?;
+
+        let input_index: u32 = input_index
+            .try_into()
+            .map_err(|e: TryFromIntError| Error::VerificationFailed(e.to_string()))?;
 
         bitcoinkernel::verify(script_pubkey, amount, tx_to, input_index, None, &outputs)
             .map_err(|e| Error::VerificationFailed(e.to_string()))?;
@@ -173,7 +179,7 @@ impl Verifier for DefaultVerifier {
 /// Returns error if verification fails, key derivation fails, or signing fails
 pub fn verify_and_sign<V: Verifier>(
     verifier: &V,
-    input_index: u32,
+    input_index: usize,
     emulated_tx_to: &[u8],
     actual_spent_outputs: &[TxOut],
     aux_rand: &[u8; 32],
@@ -184,18 +190,18 @@ pub fn verify_and_sign<V: Verifier>(
     let mut tx: Transaction = deserialize(emulated_tx_to)?;
 
     // Input index must be in bounds
-    if input_index as usize >= tx.input.len() {
+    if input_index >= tx.input.len() || input_index >= actual_spent_outputs.len() {
         return Err(Error::InputIndexOutOfBounds);
     }
 
     // Get the input amount
-    let amount = actual_spent_outputs[input_index as usize]
+    let amount = actual_spent_outputs[input_index]
         .value
         .to_signed()?
         .to_sat();
 
     // Must be script path spend
-    let input = tx.input[input_index as usize].clone();
+    let input = tx.input[input_index].clone();
     let (Some(control_block), Some(tapleaf)) = (
         input.witness.taproot_control_block(),
         input.witness.taproot_leaf_script(),
@@ -232,7 +238,7 @@ pub fn verify_and_sign<V: Verifier>(
 
     // Actual input scriptPubKey must match expected actual scriptPubKey
     let actual_address = Address::p2tr(&secp, internal_key, backup_merkle_root, Network::Bitcoin);
-    if actual_spent_outputs[input_index as usize].script_pubkey != actual_address.script_pubkey() {
+    if actual_spent_outputs[input_index].script_pubkey != actual_address.script_pubkey() {
         return Err(Error::UnexpectedInput);
     }
 
@@ -256,7 +262,7 @@ pub fn verify_and_sign<V: Verifier>(
     let mut sighash_cache = SighashCache::new(&tx);
     let sighash_bytes = sighash_cache
         .taproot_signature_hash(
-            input_index as usize,
+            input_index,
             &Prevouts::All(actual_spent_outputs),
             annex.clone(),
             None,
@@ -287,7 +293,7 @@ pub fn verify_and_sign<V: Verifier>(
     if let Some(annex) = annex {
         witness.push(annex.as_bytes());
     }
-    tx.input[input_index as usize].witness = witness;
+    tx.input[input_index].witness = witness;
 
     Ok(tx)
 }
@@ -532,6 +538,18 @@ mod kernel_tests {
             1,
             &serialize(&create_test_transaction_single_input()),
             std::slice::from_ref(&txout),
+            &[1u8; 32],
+            SecretKey::from_slice(&[1u8; 32]).unwrap(),
+            None,
+        );
+
+        assert!(matches!(result, Err(Error::InputIndexOutOfBounds)));
+
+        let result = verify_and_sign(
+            &DefaultVerifier,
+            0,
+            &serialize(&create_test_transaction_single_input()),
+            &[],
             &[1u8; 32],
             SecretKey::from_slice(&[1u8; 32]).unwrap(),
             None,
