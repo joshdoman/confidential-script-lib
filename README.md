@@ -58,7 +58,7 @@ pub trait Verifier {
         script_pubkey: &[u8],
         amount: Option<i64>,
         tx_to: &[u8],
-        input_index: u32,
+        input_index: usize,
         spent_outputs: &[TxOut],
     ) -> Result<(), Error>;
 }
@@ -95,7 +95,7 @@ pub struct DefaultVerifier;
 /// Returns error if verification fails, key derivation fails, or signing fails
 pub fn verify_and_sign<V: Verifier>(
     verifier: &V,
-    input_index: u32,
+    input_index: usize,
     emulated_tx_to: &[u8],
     actual_spent_outputs: &[TxOut],
     aux_rand: &[u8; 32],
