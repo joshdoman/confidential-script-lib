@@ -50,7 +50,6 @@ pub trait Verifier {
     /// * `tx_to` - The transaction containing the script.
     /// * `input_index` - The index of the input to verify.
     /// * `spent_outputs` - The outputs being spent by the transaction.
-    /// * `tx_weight` - The weight of the transaction.
     ///
     /// # Errors
     /// Returns `Error` if verification fails.
@@ -61,7 +60,6 @@ pub trait Verifier {
         tx_to: &[u8],
         input_index: u32,
         spent_outputs: &[TxOut],
-        tx_weight: Weight,
     ) -> Result<(), Error>;
 }
 
