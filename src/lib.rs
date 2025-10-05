@@ -44,8 +44,8 @@
 compile_error!("`std` must be enabled");
 
 use bitcoin::{
-    Address, Network, TapNodeHash, TapSighashType, TapTweakHash, Transaction, TxOut, Witness,
-    XOnlyPublicKey,
+    Address, Network, ScriptBuf, TapNodeHash, TapSighashType, TapTweakHash, Transaction, TxOut,
+    Witness, XOnlyPublicKey,
     consensus::deserialize,
     hashes::Hash,
     key::Secp256k1,
@@ -57,6 +57,7 @@ use bitcoin::{
 use hmac::{Hmac, Mac};
 use num_bigint::BigUint;
 use sha2::Sha512;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 #[cfg(feature = "bitcoinkernel")]
 use std::num::TryFromIntError;
@@ -71,8 +72,6 @@ pub enum Error {
     VerificationFailed(String),
     /// Wrapped secp256k1 errors from cryptographic operations
     Secp256k1(secp256k1::Error),
-    /// Input is not a script path spend (missing taproot control block)
-    NotScriptPathSpend,
     /// Invalid control block format or size
     InvalidControlBlock,
     /// Invalid amount
@@ -81,8 +80,8 @@ pub enum Error {
     DeserializationFailed(bitcoin::consensus::encode::Error),
     /// Unable to calculate sighash
     InvalidSighash,
-    /// Input index out of bounds
-    InputIndexOutOfBounds,
+    /// Missing spent outputs
+    MissingSpentOutputs,
     /// Unexpected input scriptPubKey
     UnexpectedInput,
 }
@@ -90,24 +89,22 @@ pub enum Error {
 /// Trait to abstract the behavior of the bitcoin script verifier, allowing
 /// users to provide their own verifier.
 pub trait Verifier {
-    /// Verify a bitcoin script, mirroring the API of `bitcoinkernel::verify`.
+    /// Verify one or more scripts in a bitcoin transaction.
     ///
     /// # Arguments
-    /// * `script_pubkey` - The script public key to verify.
-    /// * `amount` - The amount of the input being spent.
-    /// * `tx_to` - The transaction containing the script.
-    /// * `input_index` - The index of the input to verify.
+    /// * `script_pubkeys` - The scriptPubKeys to verify.
+    /// * `tx_to` - The transaction with emulated witness data.
     /// * `spent_outputs` - The outputs being spent by the transaction.
+    /// * `skip_inputs` - The inputs to ignore.
     ///
     /// # Errors
     /// Returns `Error` if verification fails.
     fn verify(
         &self,
-        script_pubkey: &[u8],
-        amount: Option<i64>,
+        script_pubkeys: &[ScriptBuf],
         tx_to: &[u8],
-        input_index: usize,
         spent_outputs: &[TxOut],
+        skip_inputs: &HashSet<usize>,
     ) -> Result<(), Error>;
 }
 
@@ -119,12 +116,12 @@ pub struct DefaultVerifier;
 impl Verifier for DefaultVerifier {
     fn verify(
         &self,
-        script_pubkey: &[u8],
-        amount: Option<i64>,
+        script_pubkeys: &[ScriptBuf],
         tx_to: &[u8],
-        input_index: usize,
         spent_outputs: &[TxOut],
+        skip_inputs: &HashSet<usize>,
     ) -> Result<(), Error> {
+        let mut amounts = Vec::new();
         let mut outputs = Vec::new();
         for txout in spent_outputs {
             let amount = txout
@@ -134,41 +131,52 @@ impl Verifier for DefaultVerifier {
                 .to_sat();
             let script = bitcoinkernel::ScriptPubkey::try_from(txout.script_pubkey.as_bytes())
                 .map_err(|e| Error::VerificationFailed(e.to_string()))?;
+
+            amounts.push(amount);
             outputs.push(bitcoinkernel::TxOut::new(&script, amount));
         }
-
-        let script_pubkey = &bitcoinkernel::ScriptPubkey::try_from(script_pubkey)
-            .map_err(|e| Error::VerificationFailed(e.to_string()))?;
 
         let tx_to = &bitcoinkernel::Transaction::try_from(tx_to)
             .map_err(|e| Error::VerificationFailed(e.to_string()))?;
 
-        let input_index: u32 = input_index
-            .try_into()
-            .map_err(|e: TryFromIntError| Error::VerificationFailed(e.to_string()))?;
+        for (i, script_pubkey) in script_pubkeys.iter().enumerate() {
+            if skip_inputs.contains(&i) {
+                continue;
+            }
 
-        bitcoinkernel::verify(script_pubkey, amount, tx_to, input_index, None, &outputs)
-            .map_err(|e| Error::VerificationFailed(e.to_string()))?;
+            let amount = amounts.get(i).cloned();
+            let script_pubkey = &bitcoinkernel::ScriptPubkey::try_from(script_pubkey.as_bytes())
+                .map_err(|e| Error::VerificationFailed(e.to_string()))?;
+            let i: u32 = i
+                .try_into()
+                .map_err(|e: TryFromIntError| Error::VerificationFailed(e.to_string()))?;
+
+            bitcoinkernel::verify(script_pubkey, amount, tx_to, i, None, &outputs)
+                .map_err(|e| Error::VerificationFailed(e.to_string()))?;
+        }
 
         Ok(())
     }
 }
 
-/// Verifies an emulated Bitcoin script and signs the corresponding transaction.
+/// Verifies an emulated Bitcoin transaction and signs the corresponding real transaction.
 ///
-/// This function performs script verification using bitcoinkernel, verifying an
-/// emulated P2TR input. If successful, it derives an XOnlyPublicKey from the
-/// parent key and the emulated merkle root, which is then tweaked with an optional
-/// backup merkle root to derive the actual spent UTXO, which is then key-path signed
-/// with `SIGHASH_DEFAULT`.
+/// This function performs script verification using a Verifier, which verifies one or
+/// more emulated P2TR inputs. If successful, it derives for each emulated input an
+/// XOnlyPublicKey from the parent key and the emulated merkle root, which is then tweaked
+/// with an optional backup merkle root to derive the input's actual spent UTXO. This is
+/// then key-path signed with `SIGHASH_DEFAULT`.
 ///
 /// If the emulated script-path spend includes a data-carrying annex (begins with 0x50
 /// followed by 0x00), the annex is included in the key-path spend. Otherwise, the annex
 /// is dropped.
 ///
+/// Non-emulated inputs are identified by the input type. An emulated input must be a
+/// P2TR script-path spend, with a derived scriptPubKey that does not match that of the
+/// actual spent output.
+///
 /// # Arguments
 /// * `verifier` - The verifier to use for script validation
-/// * `input_index` - Index of the input to verify and sign (0-based)
 /// * `emulated_tx_to` - Serialized transaction to verify and sign
 /// * `actual_spent_outputs` - Actual outputs being spent
 /// * `aux_rand` - Auxiliary random data for signing
@@ -179,7 +187,6 @@ impl Verifier for DefaultVerifier {
 /// Returns error if verification fails, key derivation fails, or signing fails
 pub fn verify_and_sign<V: Verifier>(
     verifier: &V,
-    input_index: usize,
     emulated_tx_to: &[u8],
     actual_spent_outputs: &[TxOut],
     aux_rand: &[u8; 32],
@@ -189,111 +196,145 @@ pub fn verify_and_sign<V: Verifier>(
     // Must be able to deserialize transaction
     let mut tx: Transaction = deserialize(emulated_tx_to)?;
 
-    // Input index must be in bounds
-    if input_index >= tx.input.len() || input_index >= actual_spent_outputs.len() {
-        return Err(Error::InputIndexOutOfBounds);
+    // The spent script_pubkeys of the emulated transaction
+    let mut emulated_script_pubkeys: Vec<ScriptBuf> = Vec::new();
+
+    // The child keys of each emulated input
+    let mut child_keys_by_index: HashMap<usize, SecretKey> = HashMap::new();
+
+    // The non-emulated inputs, which should not be verified
+    let mut skip_inputs: HashSet<usize> = HashSet::new();
+
+    // Check if missing a spent output
+    if actual_spent_outputs.len() < tx.input.len() {
+        return Err(Error::MissingSpentOutputs);
     }
 
-    // Get the input amount
-    let amount = actual_spent_outputs[input_index]
-        .value
-        .to_signed()?
-        .to_sat();
-
-    // Must be script path spend
-    let input = tx.input[input_index].clone();
-    let (Some(control_block), Some(tapleaf)) = (
-        input.witness.taproot_control_block(),
-        input.witness.taproot_leaf_script(),
-    ) else {
-        return Err(Error::NotScriptPathSpend);
-    };
-    let Ok(control_block) = ControlBlock::decode(control_block) else {
-        return Err(Error::NotScriptPathSpend);
-    };
-
-    // Calculate merkle root
-    let mut merkle_root = TapNodeHash::from_script(tapleaf.script, tapleaf.version);
-    for elem in &control_block.merkle_branch {
-        merkle_root = TapNodeHash::from_node_hashes(merkle_root, *elem);
-    }
-
-    // Create emulated script pubkey
+    // Loop through all inputs and update `emulated_script_pubkeys` and `child_keys_by_index`
     let secp = Secp256k1::new();
-    let emulated_address = Address::p2tr(
-        &secp,
-        control_block.internal_key,
-        Some(merkle_root),
-        Network::Bitcoin,
-    );
+    for (i, input) in tx.input.clone().into_iter().enumerate() {
+        // Must be P2TR script-path spend
+        let (Some(true), Some(control_block), Some(tapleaf)) = (
+            actual_spent_outputs[i]
+                .script_pubkey
+                .is_p2tr()
+                .then_some(true),
+            input.witness.taproot_control_block(),
+            input.witness.taproot_leaf_script(),
+        ) else {
+            emulated_script_pubkeys.push(actual_spent_outputs[i].script_pubkey.clone());
+            skip_inputs.insert(i);
+            continue;
+        };
 
-    // Get actual internal key and child key to be tweaked for signing
-    let child_key = derive_child_secret_key(parent_key, merkle_root.to_byte_array())?;
-    let (internal_key, parity) = child_key.public_key(&secp).x_only_public_key();
-    let child_key_for_tweak = if parity == secp256k1::Parity::Odd {
-        child_key.negate()
-    } else {
-        child_key
-    };
+        // Must be valid control block
+        let Ok(control_block) = ControlBlock::decode(control_block) else {
+            return Err(Error::InvalidControlBlock);
+        };
 
-    // Actual input scriptPubKey must match expected actual scriptPubKey
-    let actual_address = Address::p2tr(&secp, internal_key, backup_merkle_root, Network::Bitcoin);
-    if actual_spent_outputs[input_index].script_pubkey != actual_address.script_pubkey() {
-        return Err(Error::UnexpectedInput);
+        // Calculate merkle root
+        let mut merkle_root = TapNodeHash::from_script(tapleaf.script, tapleaf.version);
+        for elem in &control_block.merkle_branch {
+            merkle_root = TapNodeHash::from_node_hashes(merkle_root, *elem);
+        }
+
+        // Create emulated script pubkey
+        let emulated_address = Address::p2tr(
+            &secp,
+            control_block.internal_key,
+            Some(merkle_root),
+            Network::Bitcoin,
+        );
+
+        // Non-emulated input if actual scriptPubKey matches emulated scriptPubKey
+        if actual_spent_outputs[i].script_pubkey == emulated_address.script_pubkey() {
+            emulated_script_pubkeys.push(actual_spent_outputs[i].script_pubkey.clone());
+            skip_inputs.insert(i);
+            continue;
+        }
+
+        // Get actual internal key and child key to be tweaked for signing
+        let child_key = derive_child_secret_key(parent_key, merkle_root.to_byte_array())?;
+        let (internal_key, _) = child_key.public_key(&secp).x_only_public_key();
+        child_keys_by_index.insert(i, child_key);
+
+        // Actual input scriptPubKey must match expected actual scriptPubKey
+        let actual_address =
+            Address::p2tr(&secp, internal_key, backup_merkle_root, Network::Bitcoin);
+        if actual_spent_outputs[i].script_pubkey != actual_address.script_pubkey() {
+            return Err(Error::UnexpectedInput);
+        }
+
+        // Add emulated spent script_pubkey
+        emulated_script_pubkeys.push(emulated_address.script_pubkey());
     }
 
     // Must satisfy verifier
     verifier.verify(
-        emulated_address.script_pubkey().as_bytes(),
-        Some(amount),
+        &emulated_script_pubkeys,
         emulated_tx_to,
-        input_index,
         actual_spent_outputs,
+        &skip_inputs,
     )?;
 
-    // Get annex if it is data-carrying (leading byte is 0x00)
-    let annex = input
-        .witness
-        .taproot_annex()
-        .filter(|bytes| bytes.len() > 1 && bytes[1] == TAPROOT_ANNEX_DATA_CARRYING_TAG)
-        .and_then(|bytes| Annex::new(bytes).ok());
+    for (i, input) in tx.input.clone().into_iter().enumerate() {
+        if skip_inputs.contains(&i) {
+            continue;
+        }
 
-    // Create sighash for the input
-    let mut sighash_cache = SighashCache::new(&tx);
-    let sighash_bytes = sighash_cache
-        .taproot_signature_hash(
-            input_index,
-            &Prevouts::All(actual_spent_outputs),
-            annex.clone(),
-            None,
-            TapSighashType::Default,
-        )
-        .map_err(|_| Error::InvalidSighash)?;
-    let mut sighash = [0u8; 32];
-    sighash.copy_from_slice(sighash_bytes.as_byte_array());
+        // Get annex if it is data-carrying (leading byte is 0x00)
+        let annex = input
+            .witness
+            .taproot_annex()
+            .filter(|bytes| bytes.len() > 1 && bytes[1] == TAPROOT_ANNEX_DATA_CARRYING_TAG)
+            .and_then(|bytes| Annex::new(bytes).ok());
 
-    // Calculate the taproot tweaked private key for keypath spending
-    let tweak = TapTweakHash::from_key_and_tweak(internal_key, backup_merkle_root);
-    let tweaked_secret_key = child_key_for_tweak.add_tweak(&tweak.to_scalar())?;
-    let tweaked_keypair = Keypair::from_secret_key(&secp, &tweaked_secret_key);
+        // Create sighash for the input
+        let mut sighash_cache = SighashCache::new(&tx);
+        let sighash_bytes = sighash_cache
+            .taproot_signature_hash(
+                i,
+                &Prevouts::All(actual_spent_outputs),
+                annex.clone(),
+                None,
+                TapSighashType::Default,
+            )
+            .map_err(|_| Error::InvalidSighash)?;
+        let mut sighash = [0u8; 32];
+        sighash.copy_from_slice(sighash_bytes.as_byte_array());
 
-    // Sign the sighash
-    let message = Message::from_digest(sighash);
-    let signature = secp.sign_schnorr_with_aux_rand(&message, &tweaked_keypair, aux_rand);
+        // Lookup child key and prepare for tweak
+        let child_key = child_keys_by_index.get(&i).unwrap();
+        let (internal_key, parity) = child_key.public_key(&secp).x_only_public_key();
+        let child_key_for_tweak = if parity == secp256k1::Parity::Odd {
+            child_key.negate()
+        } else {
+            *child_key
+        };
 
-    // Create taproot signature (schnorr signature + sighash type)
-    let tap_signature = Signature {
-        signature,
-        sighash_type: TapSighashType::Default,
-    };
+        // Calculate the taproot tweaked private key for keypath spending
+        let tweak = TapTweakHash::from_key_and_tweak(internal_key, backup_merkle_root);
+        let tweaked_secret_key = child_key_for_tweak.add_tweak(&tweak.to_scalar())?;
+        let tweaked_keypair = Keypair::from_secret_key(&secp, &tweaked_secret_key);
 
-    // Create witness for keypath spend (include annex if data-carrying annex is present)
-    let mut witness = Witness::new();
-    witness.push(tap_signature.to_vec());
-    if let Some(annex) = annex {
-        witness.push(annex.as_bytes());
+        // Sign the sighash
+        let message = Message::from_digest(sighash);
+        let signature = secp.sign_schnorr_with_aux_rand(&message, &tweaked_keypair, aux_rand);
+
+        // Create taproot signature (schnorr signature + sighash type)
+        let tap_signature = Signature {
+            signature,
+            sighash_type: TapSighashType::Default,
+        };
+
+        // Create witness for keypath spend (include annex if data-carrying annex is present)
+        let mut witness = Witness::new();
+        witness.push(tap_signature.to_vec());
+        if let Some(annex) = annex {
+            witness.push(annex.as_bytes());
+        }
+        tx.input[i].witness = witness;
     }
-    tx.input[input_index].witness = witness;
 
     Ok(tx)
 }
@@ -411,12 +452,6 @@ impl fmt::Display for Error {
             Error::Secp256k1(e) => {
                 write!(f, "Secp256k1 cryptographic operation failed: {e}")
             }
-            Error::NotScriptPathSpend => {
-                write!(
-                    f,
-                    "Input is not a script path spend (missing taproot control block)"
-                )
-            }
             Error::InvalidAmount(e) => {
                 write!(f, "Invalid amount: {e}")
             }
@@ -429,8 +464,8 @@ impl fmt::Display for Error {
             Error::InvalidSighash => {
                 write!(f, "Unable to calculate sighash for input")
             }
-            Error::InputIndexOutOfBounds => {
-                write!(f, "Input index out of bounds")
+            Error::MissingSpentOutputs => {
+                write!(f, "Missing spent outputs")
             }
             Error::UnexpectedInput => {
                 write!(f, "Unexpected input scriptPubKey")
@@ -516,7 +551,6 @@ mod kernel_tests {
     fn test_unable_to_deserialize_tx() {
         let result = verify_and_sign(
             &DefaultVerifier,
-            0,
             &[],
             &[],
             &[1u8; 32],
@@ -528,26 +562,9 @@ mod kernel_tests {
     }
 
     #[test]
-    fn test_input_index_out_of_bounds() {
-        let txout = TxOut {
-            value: Amount::from_sat(100000),
-            script_pubkey: ScriptBuf::new_op_return([]),
-        };
+    fn test_missing_spent_outputs() {
         let result = verify_and_sign(
             &DefaultVerifier,
-            1,
-            &serialize(&create_test_transaction_single_input()),
-            std::slice::from_ref(&txout),
-            &[1u8; 32],
-            SecretKey::from_slice(&[1u8; 32]).unwrap(),
-            None,
-        );
-
-        assert!(matches!(result, Err(Error::InputIndexOutOfBounds)));
-
-        let result = verify_and_sign(
-            &DefaultVerifier,
-            0,
             &serialize(&create_test_transaction_single_input()),
             &[],
             &[1u8; 32],
@@ -555,26 +572,7 @@ mod kernel_tests {
             None,
         );
 
-        assert!(matches!(result, Err(Error::InputIndexOutOfBounds)));
-    }
-
-    #[test]
-    fn test_not_script_path_spend() {
-        let txout = TxOut {
-            value: Amount::from_sat(100000),
-            script_pubkey: ScriptBuf::new_op_return([]),
-        };
-        let result = verify_and_sign(
-            &DefaultVerifier,
-            0,
-            &serialize(&create_test_transaction_single_input()),
-            std::slice::from_ref(&txout),
-            &[1u8; 32],
-            SecretKey::from_slice(&[1u8; 32]).unwrap(),
-            None,
-        );
-
-        assert!(matches!(result, Err(Error::NotScriptPathSpend)));
+        assert!(matches!(result, Err(Error::MissingSpentOutputs)));
     }
 
     #[test]
@@ -611,14 +609,14 @@ mod kernel_tests {
         emulated_tx.input[0].witness = witness;
 
         // 7. Create input UTXO with unexpected scriptPubKey
+        let dummy_p2tr_address = Address::p2tr(&secp, internal_key, None, Network::Bitcoin);
         let txout = TxOut {
             value: Amount::from_sat(100000),
-            script_pubkey: ScriptBuf::new_op_return([]),
+            script_pubkey: dummy_p2tr_address.script_pubkey(),
         };
 
         let result = verify_and_sign(
             &DefaultVerifier,
-            0,
             &serialize(&emulated_tx),
             std::slice::from_ref(&txout),
             &[1u8; 32],
@@ -682,7 +680,6 @@ mod kernel_tests {
         // 9. Verify and sign actual transaction
         let actual_tx = verify_and_sign(
             &DefaultVerifier,
-            0,
             &serialize(&emulated_tx),
             &actual_spent_outputs,
             &aux_rand,
@@ -772,7 +769,6 @@ mod kernel_tests {
         // 9. Verify and sign actual transaction
         let actual_tx = verify_and_sign(
             &DefaultVerifier,
-            0,
             &serialize(&emulated_tx),
             &actual_spent_outputs,
             &aux_rand,
@@ -863,7 +859,6 @@ mod kernel_tests {
         // 9. Verify and sign actual transaction
         let actual_tx = verify_and_sign(
             &DefaultVerifier,
-            0,
             &serialize(&emulated_tx),
             &actual_spent_outputs,
             &aux_rand,
@@ -952,7 +947,6 @@ mod kernel_tests {
         // 10. Verify and sign actual transaction
         let actual_tx = verify_and_sign(
             &DefaultVerifier,
-            0,
             &serialize(&emulated_tx),
             &actual_spent_outputs,
             &aux_rand,
@@ -1042,7 +1036,6 @@ mod kernel_tests {
         // 10. Verify and sign actual transaction
         let actual_tx = verify_and_sign(
             &DefaultVerifier,
-            0,
             &serialize(&emulated_tx),
             &actual_spent_outputs,
             &aux_rand,
@@ -1133,7 +1126,6 @@ mod kernel_tests {
         // 9. Verify and sign actual transaction
         let actual_tx = verify_and_sign(
             &DefaultVerifier,
-            1,
             &serialize(&emulated_tx),
             &actual_spent_outputs,
             &aux_rand,

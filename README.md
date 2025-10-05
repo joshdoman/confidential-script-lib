@@ -42,24 +42,22 @@ Finally, the enclave should be able to expose the master public key, so that use
 /// Trait to abstract the behavior of the bitcoin script verifier, allowing
 /// users to provide their own verifier.
 pub trait Verifier {
-    /// Verify a bitcoin script, mirroring the API of `bitcoinkernel::verify`.
+    /// Verify one or more scripts in a bitcoin transaction.
     ///
     /// # Arguments
-    /// * `script_pubkey` - The script public key to verify.
-    /// * `amount` - The amount of the input being spent.
-    /// * `tx_to` - The transaction containing the script.
-    /// * `input_index` - The index of the input to verify.
+    /// * `script_pubkeys` - The script public keys to verify.
+    /// * `tx_to` - The transaction with emulated witness data.
     /// * `spent_outputs` - The outputs being spent by the transaction.
+    /// * `skip_inputs` - The inputs to not verify.
     ///
     /// # Errors
     /// Returns `Error` if verification fails.
     fn verify(
         &self,
-        script_pubkey: &[u8],
-        amount: Option<i64>,
+        script_pubkeys: &[ScriptBuf],
         tx_to: &[u8],
-        input_index: usize,
         spent_outputs: &[TxOut],
+        skip_inputs: HashSet<usize>,
     ) -> Result<(), Error>;
 }
 
@@ -70,21 +68,24 @@ pub struct DefaultVerifier;
 ### Convert emulated transaction
 
 ```rust
-/// Verifies an emulated Bitcoin script and signs the corresponding transaction.
+/// Verifies an emulated Bitcoin transaction and signs the corresponding real transaction.
 ///
-/// This function performs script verification using bitcoinkernel, verifying an
-/// emulated P2TR input. If successful, it derives an XOnlyPublicKey from the
-/// parent key and the emulated merkle root, which is then tweaked with an optional
-/// backup merkle root to derive the actual spent UTXO, which is then key-path signed
-/// with `SIGHASH_DEFAULT`.
+/// This function performs script verification using a Verifier, which verifies one or
+/// more emulated P2TR inputs. If successful, it derives for each emulated input an
+/// XOnlyPublicKey from the parent key and the emulated merkle root, which is then tweaked
+/// with an optional backup merkle root to derive the input's actual spent UTXO. This is
+/// then key-path signed with `SIGHASH_DEFAULT`.
 ///
 /// If the emulated script-path spend includes a data-carrying annex (begins with 0x50
 /// followed by 0x00), the annex is included in the key-path spend. Otherwise, the annex
 /// is dropped.
 ///
+/// Non-emulated inputs are identified by the input type. An emulated input must be a
+/// P2TR script-path spend, with a derived scriptPubKey that does not match that of the
+/// actual spent output.
+///
 /// # Arguments
 /// * `verifier` - The verifier to use for script validation
-/// * `input_index` - Index of the input to verify and sign (0-based)
 /// * `emulated_tx_to` - Serialized transaction to verify and sign
 /// * `actual_spent_outputs` - Actual outputs being spent
 /// * `aux_rand` - Auxiliary random data for signing
@@ -95,7 +96,6 @@ pub struct DefaultVerifier;
 /// Returns error if verification fails, key derivation fails, or signing fails
 pub fn verify_and_sign<V: Verifier>(
     verifier: &V,
-    input_index: usize,
     emulated_tx_to: &[u8],
     actual_spent_outputs: &[TxOut],
     aux_rand: &[u8; 32],
