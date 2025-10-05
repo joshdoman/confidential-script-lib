@@ -59,8 +59,6 @@ use num_bigint::BigUint;
 use sha2::{Digest, Sha256, Sha512};
 use std::collections::HashMap;
 use std::fmt;
-#[cfg(feature = "bitcoinkernel")]
-use std::num::TryFromIntError;
 
 /// The initial byte in a data-carrying taproot annex
 pub const TAPROOT_ANNEX_DATA_CARRYING_TAG: u8 = 0;
@@ -74,8 +72,6 @@ pub enum Error {
     Secp256k1(secp256k1::Error),
     /// Invalid control block format or size
     InvalidControlBlock,
-    /// Invalid amount
-    InvalidAmount(bitcoin_units::amount::OutOfRangeError),
     /// Deserialization failed
     DeserializationFailed(bitcoin::consensus::encode::Error),
     /// Unable to calculate sighash
@@ -124,8 +120,7 @@ impl Verifier for DefaultVerifier {
             let amount = txout
                 .value
                 .to_signed()
-                .map_err(Error::InvalidAmount)
-                .map_err(|e| Error::VerificationFailed(e.to_string()))?
+                .map_err(|_| Error::VerificationFailed("invalid amount".to_string()))?
                 .to_sat();
             let script = bitcoinkernel::ScriptPubkey::try_from(txout.script_pubkey.as_bytes())
                 .map_err(|e| Error::VerificationFailed(e.to_string()))?;
@@ -141,9 +136,6 @@ impl Verifier for DefaultVerifier {
             let amount = amounts.get(i).cloned();
             let script_pubkey = &bitcoinkernel::ScriptPubkey::try_from(script_pubkey.as_bytes())
                 .map_err(|e| Error::VerificationFailed(e.to_string()))?;
-            let i: u32 = i
-                .try_into()
-                .map_err(|e: TryFromIntError| Error::VerificationFailed(e.to_string()))?;
 
             bitcoinkernel::verify(script_pubkey, amount, tx_to, i, None, &outputs)
                 .map_err(|e| Error::VerificationFailed(e.to_string()))?;
@@ -445,9 +437,6 @@ impl fmt::Display for Error {
             Error::Secp256k1(e) => {
                 write!(f, "Secp256k1 cryptographic operation failed: {e}")
             }
-            Error::InvalidAmount(e) => {
-                write!(f, "Invalid amount: {e}")
-            }
             Error::InvalidControlBlock => {
                 write!(f, "Input has invalid control block")
             }
@@ -476,12 +465,6 @@ impl From<secp256k1::Error> for Error {
 impl From<bitcoin::consensus::encode::Error> for Error {
     fn from(error: bitcoin::consensus::encode::Error) -> Self {
         Error::DeserializationFailed(error)
-    }
-}
-
-impl From<bitcoin_units::amount::OutOfRangeError> for Error {
-    fn from(error: bitcoin_units::amount::OutOfRangeError) -> Self {
-        Error::InvalidAmount(error)
     }
 }
 
