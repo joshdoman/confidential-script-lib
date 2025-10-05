@@ -1,6 +1,6 @@
 [package]
 name = "confidential-script-lib"
-version = "0.2.2"
+version = "0.2.3"
 description = "Emulate Bitcoin script by converting script-path spends to key-path spends"
 keywords = [ "bitcoin", "script", "kernel", "emulation", "tee" ]
 authors = ["Joshua Doman <joshsdoman@gmail.com>"]
