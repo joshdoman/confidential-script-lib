@@ -54,7 +54,7 @@ pub trait Verifier {
     fn verify(
         &self,
         script_pubkeys: &HashMap<usize, ScriptBuf>,
-        tx_to: &[u8],
+        tx_to: &Transaction,
         spent_outputs: &[TxOut],
     ) -> Result<(), Error>;
 }
@@ -87,7 +87,7 @@ pub struct DefaultVerifier;
 ///
 /// # Arguments
 /// * `verifier` - The verifier to use for script validation
-/// * `emulated_tx_to` - Serialized transaction to verify and sign
+/// * `emulated_tx_to` - Emulated transaction to verify and sign
 /// * `actual_spent_outputs` - Actual outputs being spent
 /// * `aux_rand` - Auxiliary random data for signing
 /// * `parent_key` - Parent secret key used to derive child key for signing
@@ -97,7 +97,7 @@ pub struct DefaultVerifier;
 /// Returns error if verification fails, key derivation fails, or signing fails
 pub fn verify_and_sign<V: Verifier>(
     verifier: &V,
-    emulated_tx_to: &[u8],
+    emulated_tx_to: &Transaction,
     actual_spent_outputs: &[TxOut],
     aux_rand: &[u8; 32],
     parent_key: SecretKey,

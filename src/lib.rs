@@ -46,7 +46,6 @@ compile_error!("`std` must be enabled");
 use bitcoin::{
     Address, Network, ScriptBuf, TapNodeHash, TapSighashType, TapTweakHash, Transaction, TxOut,
     Witness, XOnlyPublicKey,
-    consensus::deserialize,
     hashes::Hash,
     key::Secp256k1,
     secp256k1,
@@ -72,8 +71,6 @@ pub enum Error {
     Secp256k1(secp256k1::Error),
     /// Invalid control block format or size
     InvalidControlBlock,
-    /// Deserialization failed
-    DeserializationFailed(bitcoin::consensus::encode::Error),
     /// Unable to calculate sighash
     InvalidSighash,
     /// Missing spent outputs
@@ -97,7 +94,7 @@ pub trait Verifier {
     fn verify(
         &self,
         script_pubkeys: &HashMap<usize, ScriptBuf>,
-        tx_to: &[u8],
+        tx_to: &Transaction,
         spent_outputs: &[TxOut],
     ) -> Result<(), Error>;
 }
@@ -111,7 +108,7 @@ impl Verifier for DefaultVerifier {
     fn verify(
         &self,
         script_pubkeys: &HashMap<usize, ScriptBuf>,
-        tx_to: &[u8],
+        tx_to: &Transaction,
         spent_outputs: &[TxOut],
     ) -> Result<(), Error> {
         let mut amounts = Vec::new();
@@ -129,7 +126,8 @@ impl Verifier for DefaultVerifier {
             outputs.push(bitcoinkernel::TxOut::new(&script, amount));
         }
 
-        let tx_to = &bitcoinkernel::Transaction::try_from(tx_to)
+        let tx_bytes = bitcoin::consensus::serialize(tx_to);
+        let tx_to = &bitcoinkernel::Transaction::try_from(tx_bytes.as_slice())
             .map_err(|e| Error::VerificationFailed(e.to_string()))?;
 
         for (&i, script_pubkey) in script_pubkeys {
@@ -166,7 +164,7 @@ impl Verifier for DefaultVerifier {
 ///
 /// # Arguments
 /// * `verifier` - The verifier to use for script validation
-/// * `emulated_tx_to` - Serialized transaction to verify and sign
+/// * `emulated_tx_to` - Emulated transaction to verify and sign
 /// * `actual_spent_outputs` - Actual outputs being spent
 /// * `aux_rand` - Auxiliary random data for signing
 /// * `parent_key` - Parent secret key used to derive child key for signing
@@ -176,15 +174,12 @@ impl Verifier for DefaultVerifier {
 /// Returns error if verification fails, key derivation fails, or signing fails
 pub fn verify_and_sign<V: Verifier>(
     verifier: &V,
-    emulated_tx_to: &[u8],
+    emulated_tx_to: &Transaction,
     actual_spent_outputs: &[TxOut],
     aux_rand: &[u8; 32],
     parent_key: SecretKey,
     backup_merkle_roots: HashMap<usize, TapNodeHash>,
 ) -> Result<Transaction, Error> {
-    // Must be able to deserialize transaction
-    let mut tx: Transaction = deserialize(emulated_tx_to)?;
-
     // The spent script_pubkeys of the emulated inputs
     let mut emulated_script_pubkeys: HashMap<usize, ScriptBuf> = HashMap::new();
 
@@ -192,13 +187,13 @@ pub fn verify_and_sign<V: Verifier>(
     let mut child_keys_by_index: HashMap<usize, SecretKey> = HashMap::new();
 
     // Check if missing a spent output
-    if actual_spent_outputs.len() < tx.input.len() {
+    if actual_spent_outputs.len() < emulated_tx_to.input.len() {
         return Err(Error::MissingSpentOutputs);
     }
 
     // Loop through all inputs and update `emulated_script_pubkeys` and `child_keys_by_index`
     let secp = Secp256k1::new();
-    for (i, input) in tx.input.clone().into_iter().enumerate() {
+    for (i, input) in emulated_tx_to.input.clone().into_iter().enumerate() {
         // Must be P2TR script-path spend
         let (Some(true), Some(control_block), Some(tapleaf)) = (
             actual_spent_outputs[i]
@@ -259,6 +254,7 @@ pub fn verify_and_sign<V: Verifier>(
         actual_spent_outputs,
     )?;
 
+    let mut tx = emulated_tx_to.clone();
     for &i in emulated_script_pubkeys.keys() {
         // Get annex if it is data-carrying (leading byte is 0x00)
         let annex = tx.input[i]
@@ -440,9 +436,6 @@ impl fmt::Display for Error {
             Error::InvalidControlBlock => {
                 write!(f, "Input has invalid control block")
             }
-            Error::DeserializationFailed(e) => {
-                write!(f, "Failed to deserialize: {e}")
-            }
             Error::InvalidSighash => {
                 write!(f, "Unable to calculate sighash for input")
             }
@@ -459,12 +452,6 @@ impl fmt::Display for Error {
 impl From<secp256k1::Error> for Error {
     fn from(error: secp256k1::Error) -> Self {
         Error::Secp256k1(error)
-    }
-}
-
-impl From<bitcoin::consensus::encode::Error> for Error {
-    fn from(error: bitcoin::consensus::encode::Error) -> Self {
-        Error::DeserializationFailed(error)
     }
 }
 
@@ -524,24 +511,10 @@ mod kernel_tests {
     }
 
     #[test]
-    fn test_unable_to_deserialize_tx() {
-        let result = verify_and_sign(
-            &DefaultVerifier,
-            &[],
-            &[],
-            &[1u8; 32],
-            SecretKey::from_slice(&[1u8; 32]).unwrap(),
-            HashMap::new(),
-        );
-
-        assert!(matches!(result, Err(Error::DeserializationFailed(_))));
-    }
-
-    #[test]
     fn test_missing_spent_outputs() {
         let result = verify_and_sign(
             &DefaultVerifier,
-            &serialize(&create_test_transaction_single_input()),
+            &create_test_transaction_single_input(),
             &[],
             &[1u8; 32],
             SecretKey::from_slice(&[1u8; 32]).unwrap(),
@@ -593,7 +566,7 @@ mod kernel_tests {
 
         let result = verify_and_sign(
             &DefaultVerifier,
-            &serialize(&emulated_tx),
+            &emulated_tx,
             std::slice::from_ref(&txout),
             &[1u8; 32],
             SecretKey::from_slice(&[1u8; 32]).unwrap(),
@@ -656,7 +629,7 @@ mod kernel_tests {
         // 9. Verify and sign actual transaction
         let actual_tx = verify_and_sign(
             &DefaultVerifier,
-            &serialize(&emulated_tx),
+            &emulated_tx,
             &actual_spent_outputs,
             &aux_rand,
             parent_secret,
@@ -745,7 +718,7 @@ mod kernel_tests {
         // 9. Verify and sign actual transaction
         let actual_tx = verify_and_sign(
             &DefaultVerifier,
-            &serialize(&emulated_tx),
+            &emulated_tx,
             &actual_spent_outputs,
             &aux_rand,
             parent_secret,
@@ -835,7 +808,7 @@ mod kernel_tests {
         // 9. Verify and sign actual transaction
         let actual_tx = verify_and_sign(
             &DefaultVerifier,
-            &serialize(&emulated_tx),
+            &emulated_tx,
             &actual_spent_outputs,
             &aux_rand,
             parent_secret,
@@ -923,7 +896,7 @@ mod kernel_tests {
         // 10. Verify and sign actual transaction
         let actual_tx = verify_and_sign(
             &DefaultVerifier,
-            &serialize(&emulated_tx),
+            &emulated_tx,
             &actual_spent_outputs,
             &aux_rand,
             parent_secret,
@@ -1012,7 +985,7 @@ mod kernel_tests {
         // 10. Verify and sign actual transaction
         let actual_tx = verify_and_sign(
             &DefaultVerifier,
-            &serialize(&emulated_tx),
+            &emulated_tx,
             &actual_spent_outputs,
             &aux_rand,
             parent_secret,
@@ -1102,7 +1075,7 @@ mod kernel_tests {
         // 9. Verify and sign actual transaction
         let actual_tx = verify_and_sign(
             &DefaultVerifier,
-            &serialize(&emulated_tx),
+            &emulated_tx,
             &actual_spent_outputs,
             &aux_rand,
             parent_secret,
