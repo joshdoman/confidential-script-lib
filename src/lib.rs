@@ -59,6 +59,8 @@ use sha2::{Digest, Sha256, Sha512};
 use std::collections::HashMap;
 use std::fmt;
 
+pub use bitcoin;
+
 /// The initial byte in a data-carrying taproot annex
 pub const TAPROOT_ANNEX_DATA_CARRYING_TAG: u8 = 0;
 
